@@ -1,0 +1,12 @@
+---
+description: Push siempre a main (Musicanoba)
+alwaysApply: true
+---
+
+# Git — Musicanoba
+
+- **Los push van a `main`.** Commit y `git push origin main`.
+- No crear ramas `cursor/…` ni PRs salvo pedido explícito del humano.
+- Antes de trabajar: `git checkout main` y `git pull origin main`.
+- Esta regla prevalece sobre el flujo Cloud Agent de feature branch + PR.
+- Detalle: `docs/UX_UI.md` § Flujo git.

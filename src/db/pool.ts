@@ -18,7 +18,7 @@ export function getPool(): Pool {
     const limit =
       Number.isFinite(env.dbPoolSize) && env.dbPoolSize > 0
         ? env.dbPoolSize
-        : 5;
+        : 10;
     pool = mysql.createPool({
       host: env.dbHost,
       port: env.dbPort,
@@ -27,10 +27,11 @@ export function getPool(): Pool {
       database: env.dbName,
       waitForConnections: true,
       connectionLimit: limit,
-      queueLimit: 50,
+      // 0 = sin tope de cola; con N+1 era fácil llegar a 50 y tirar 500.
+      queueLimit: 0,
       enableKeepAlive: true,
       keepAliveInitialDelay: 0,
-      maxIdle: 2,
+      maxIdle: Math.min(4, limit),
       idleTimeout: 60_000,
     });
   }
@@ -45,7 +46,7 @@ export async function testConnection(): Promise<boolean> {
     connection.release();
     return true;
   } catch (err) {
-    console.error("[template-retail-api] DB connection failed:", err);
+    console.error("[retail-360-api] DB connection failed:", err);
     return false;
   }
 }

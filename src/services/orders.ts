@@ -24,6 +24,9 @@ import { getProduct } from "./products.js";
 
 type OrderRow = RowDataPacket & {
   id: string;
+  comercio_id: string | null;
+  branch_id: string | null;
+  vendedor_id: string | null;
   folio: string;
   client_id: string | null;
   cliente_nombre: string;
@@ -36,6 +39,8 @@ type OrderRow = RowDataPacket & {
   telefono_contacto: string | null;
   metodo_pago: PaymentMethod | null;
   created_at: Date | string;
+  branch_nombre?: string | null;
+  vendedor_nombre?: string | null;
 };
 
 type LineRow = RowDataPacket & {
@@ -59,6 +64,11 @@ function iso(v: Date | string): string {
 function mapOrder(row: OrderRow, lines: OrderLine[]): Order {
   return {
     id: row.id,
+    comercioId: row.comercio_id,
+    branchId: row.branch_id,
+    vendedorId: row.vendedor_id,
+    branchNombre: row.branch_nombre ?? null,
+    vendedorNombre: row.vendedor_nombre ?? null,
     folio: row.folio,
     clientId: row.client_id,
     clienteNombre: row.cliente_nombre,
@@ -74,6 +84,15 @@ function mapOrder(row: OrderRow, lines: OrderLine[]): Order {
     metodoPago: row.metodo_pago,
   };
 }
+
+const ORDER_SELECT = `
+  SELECT o.*,
+         b.nombre AS branch_nombre,
+         u.nombre AS vendedor_nombre
+  FROM orders o
+  LEFT JOIN branches b ON b.id = o.branch_id
+  LEFT JOIN users u ON u.id = o.vendedor_id
+`;
 
 async function loadLines(orderIds: string[]): Promise<Map<string, OrderLine[]>> {
   const map = new Map<string, OrderLine[]>();
@@ -126,18 +145,24 @@ async function nextFolio(
   return `P-${n}`;
 }
 
+type PendingDeduction = { productId: string; qty: number };
+
 async function insertOrder(
   conn: PoolConnection,
   order: Omit<Order, "createdAt"> & { createdAt?: string },
   deductStock: boolean
-): Promise<void> {
+): Promise<PendingDeduction[]> {
+  const pending: PendingDeduction[] = [];
   await conn.execute(
     `INSERT INTO orders
-     (id, folio, client_id, cliente_nombre, status, canal, price_list_id,
+     (id, comercio_id, branch_id, vendedor_id, folio, client_id, cliente_nombre, status, canal, price_list_id,
       con_envio, envio_costo, direccion_envio, telefono_contacto, metodo_pago)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       order.id,
+      order.comercioId ?? null,
+      order.branchId ?? null,
+      order.vendedorId ?? null,
       order.folio,
       order.clientId,
       order.clienteNombre,
@@ -165,33 +190,45 @@ async function insertOrder(
       ]
     );
     if (deductStock) {
-      const [result] = await conn.execute<ResultSetHeader>(
-        `UPDATE products SET stock = GREATEST(0, stock - ?) WHERE id = ?`,
-        [line.cantidad, line.productId]
-      );
-      if (result.affectedRows === 0) {
-        throw new HttpError(400, `Producto ${line.productId} no encontrado.`);
-      }
+      pending.push({ productId: line.productId, qty: line.cantidad });
     }
+  }
+  return pending;
+}
+
+async function applyDeductions(items: PendingDeduction[]): Promise<void> {
+  const { deductStock: deduct } = await import("./comercios.js");
+  for (const item of items) {
+    await deduct(item.productId, item.qty);
   }
 }
 
-export async function listOrders(canal?: OrderCanal): Promise<Order[]> {
-  const rows = canal
-    ? await query<OrderRow[]>(
-        `SELECT * FROM orders WHERE canal = ? ORDER BY created_at DESC`,
-        [canal]
-      )
-    : await query<OrderRow[]>(
-        `SELECT * FROM orders ORDER BY created_at DESC`
-      );
+export async function listOrders(
+  canal?: OrderCanal,
+  comercioId?: string,
+  branchId?: string | null
+): Promise<Order[]> {
+  const { getDefaultComercioId } = await import("./comercios.js");
+  const cid = comercioId || (await getDefaultComercioId());
+  const params: Array<string> = [cid];
+  let sql = `${ORDER_SELECT} WHERE o.comercio_id = ?`;
+  if (canal) {
+    sql += ` AND o.canal = ?`;
+    params.push(canal);
+  }
+  if (branchId) {
+    sql += ` AND o.branch_id = ?`;
+    params.push(branchId);
+  }
+  sql += ` ORDER BY o.created_at DESC`;
+  const rows = await query<OrderRow[]>(sql, params);
   const lines = await loadLines(rows.map((r) => r.id));
   return rows.map((r) => mapOrder(r, lines.get(r.id) ?? []));
 }
 
 export async function getOrder(id: string): Promise<Order | null> {
   const rows = await query<OrderRow[]>(
-    `SELECT * FROM orders WHERE id = ? LIMIT 1`,
+    `${ORDER_SELECT} WHERE o.id = ? LIMIT 1`,
     [id]
   );
   if (!rows[0]) return null;
@@ -218,11 +255,16 @@ function normalizeLines(
 export async function createPedido(input: {
   clientId: string;
   lines: OrderLine[];
+  comercioId?: string;
+  branchId?: string | null;
+  vendedorId?: string | null;
 }): Promise<Order> {
   if (!input.clientId) throw new HttpError(400, "Elegí un cliente.");
+  const { getDefaultComercioId } = await import("./comercios.js");
+  const comercioId = input.comercioId || (await getDefaultComercioId());
   const client = await getClient(input.clientId);
   if (!client) throw new HttpError(404, "Cliente no encontrado.");
-  const listId = await resolveClientPriceListId(client.id);
+  const listId = await resolveClientPriceListId(client.id, comercioId);
 
   const products = await Promise.all(
     input.lines.map((l) => getProduct(l.productId))
@@ -243,6 +285,9 @@ export async function createPedido(input: {
     const folio = await nextFolio(conn, "pedido");
     const draft: Order = {
       id,
+      comercioId,
+      branchId: input.branchId ?? null,
+      vendedorId: input.vendedorId ?? null,
       folio,
       clientId: client.id,
       clienteNombre: client.nombre,
@@ -266,18 +311,29 @@ export async function createPedido(input: {
 export async function createMayoristaPedido(input: {
   clientId: string;
   lines: OrderLine[];
+  comercioId?: string;
+  branchId?: string | null;
+  vendedorId?: string | null;
 }): Promise<Order> {
   if (!input.clientId) throw new HttpError(400, "Elegí un cliente.");
+  const { getDefaultComercioId } = await import("./comercios.js");
+  const { listPriceLists } = await import("./price-lists.js");
+  const comercioId = input.comercioId || (await getDefaultComercioId());
   const client = await getClient(input.clientId);
   if (!client) throw new HttpError(404, "Cliente no encontrado.");
-  await ensureActiveList(PRICE_LIST_MAYORISTA);
+  const lists = await listPriceLists(true, comercioId);
+  const mayorista =
+    lists.find((l) => l.codigo === "mayorista") ??
+    lists.find((l) => l.id === PRICE_LIST_MAYORISTA);
+  if (!mayorista) throw new HttpError(400, "No hay lista mayorista en este comercio.");
+  await ensureActiveList(mayorista.id);
 
   const products = await Promise.all(
     input.lines.map((l) => getProduct(l.productId))
   );
   const lines = normalizeLines(input.lines, (l) => {
     const p = products.find((x) => x?.id === l.productId);
-    return p ? productPrice(p, PRICE_LIST_MAYORISTA) : l.precioUnitario;
+    return p ? productPrice(p, mayorista.id) : l.precioUnitario;
   });
   for (let i = 0; i < lines.length; i++) {
     if (!products[i]) {
@@ -287,10 +343,14 @@ export async function createMayoristaPedido(input: {
   }
 
   const id = nextId("o");
+  let pending: PendingDeduction[] = [];
   const order = await withTransaction(async (conn) => {
     const folio = await nextFolio(conn, "mayorista");
     const draft: Order = {
       id,
+      comercioId,
+      branchId: input.branchId ?? null,
+      vendedorId: input.vendedorId ?? null,
       folio,
       clientId: client.id,
       clienteNombre: client.nombre,
@@ -298,16 +358,17 @@ export async function createMayoristaPedido(input: {
       lines,
       createdAt: new Date().toISOString(),
       canal: "mayorista",
-      priceListId: PRICE_LIST_MAYORISTA,
+      priceListId: mayorista.id,
       conEnvio: false,
       envioCosto: 0,
       direccionEnvio: null,
       telefonoContacto: null,
       metodoPago: null,
     };
-    await insertOrder(conn, draft, true);
+    pending = await insertOrder(conn, draft, true);
     return draft;
   });
+  await applyDeductions(pending);
   return (await getOrder(order.id)) ?? order;
 }
 
@@ -320,6 +381,9 @@ export async function createPosSale(input: {
   direccionEnvio?: string;
   telefonoContacto?: string;
   metodoPago?: PaymentMethod | null;
+  comercioId?: string;
+  branchId?: string | null;
+  vendedorId?: string | null;
 }): Promise<Order> {
   if (!input.lines.length) {
     throw new HttpError(400, "Agregá al menos un producto.");
@@ -332,16 +396,18 @@ export async function createPosSale(input: {
     );
   }
 
+  const { getDefaultComercioId } = await import("./comercios.js");
+  const comercioId = input.comercioId || (await getDefaultComercioId());
   const clientId = input.clientId ?? null;
   const client = clientId ? await getClient(clientId) : null;
   if (clientId && !client) throw new HttpError(404, "Cliente no encontrado.");
 
   let listId =
     input.priceListId ||
-    (await resolveClientPriceListId(clientId)) ||
-    (await getDefaultPriceListId());
+    (await resolveClientPriceListId(clientId, comercioId)) ||
+    (await getDefaultPriceListId(comercioId));
   const list = await getPriceList(listId);
-  if (!list?.activa) listId = await getDefaultPriceListId();
+  if (!list?.activa) listId = await getDefaultPriceListId(comercioId);
 
   const conEnvio = Boolean(input.conEnvio);
   const envioCosto = conEnvio
@@ -387,10 +453,14 @@ export async function createPosSale(input: {
   }
 
   const id = nextId("o");
+  let pending: PendingDeduction[] = [];
   const order = await withTransaction(async (conn) => {
     const folio = await nextFolio(conn, "pos");
     const draft: Order = {
       id,
+      comercioId,
+      branchId: input.branchId ?? null,
+      vendedorId: input.vendedorId ?? null,
       folio,
       clientId: client?.id ?? null,
       clienteNombre: client?.nombre ?? "Mostrador",
@@ -405,50 +475,103 @@ export async function createPosSale(input: {
       telefonoContacto,
       metodoPago,
     };
-    await insertOrder(conn, draft, true);
+    pending = await insertOrder(conn, draft, true);
     return draft;
   });
+  await applyDeductions(pending);
   return (await getOrder(order.id)) ?? order;
 }
 
-export async function dashboardStats(todayIso?: string): Promise<{
+function orderAmount(order: Order): number {
+  const lines = order.lines.reduce(
+    (a, l) => a + l.cantidad * l.precioUnitario,
+    0
+  );
+  return lines + (order.conEnvio ? order.envioCosto : 0);
+}
+
+export async function dashboardStats(
+  todayIso?: string,
+  comercioId?: string,
+  branchId?: string | null
+): Promise<{
   productos: number;
   clientes: number;
   pedidosAbiertos: number;
   ventasHoy: number;
   stockBajo: number;
+  scope: "all" | "branch";
+  branchId: string | null;
+  ventasPorVendedor: import("../types.js").VendorSalesRow[];
 }> {
+  const { getDefaultComercioId } = await import("./comercios.js");
+  const cid = comercioId || (await getDefaultComercioId());
   const day = todayIso ?? new Date().toISOString().slice(0, 10);
+  const branchFilter = branchId ? ` AND o.branch_id = ?` : "";
+  const branchParams = branchId ? [branchId] : [];
 
   const [prod] = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS n FROM products WHERE activo = 1`
+    `SELECT COUNT(*) AS n FROM products WHERE activo = 1 AND comercio_id = ?`,
+    [cid]
   );
   const [cli] = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS n FROM clients`
+    `SELECT COUNT(*) AS n FROM clients WHERE comercio_id = ?`,
+    [cid]
   );
   const [abiertos] = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS n FROM orders
-     WHERE status IN ('confirmado','preparando')`
-  );
-  const [stock] = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS n FROM products WHERE activo = 1 AND stock <= 20`
+    `SELECT COUNT(*) AS n FROM orders o
+     WHERE o.comercio_id = ? AND o.status IN ('confirmado','preparando')${branchFilter}`,
+    [cid, ...branchParams]
   );
 
+  let stockBajo = 0;
+  if (branchId) {
+    const [stock] = await query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS n
+       FROM product_branch_stock pbs
+       INNER JOIN products p ON p.id = pbs.product_id
+       WHERE p.activo = 1 AND p.comercio_id = ?
+         AND pbs.branch_id = ? AND pbs.stock <= 20`,
+      [cid, branchId]
+    );
+    stockBajo = Number(stock?.n ?? 0);
+  } else {
+    const [stock] = await query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS n FROM products WHERE activo = 1 AND comercio_id = ? AND stock <= 20`,
+      [cid]
+    );
+    stockBajo = Number(stock?.n ?? 0);
+  }
+
   const ordersHoy = await query<OrderRow[]>(
-    `SELECT * FROM orders
-     WHERE DATE(created_at) = ?
-       AND status NOT IN ('cancelado','borrador')`,
-    [day]
+    `${ORDER_SELECT}
+     WHERE o.comercio_id = ?
+       AND DATE(o.created_at) = ?
+       AND o.status NOT IN ('cancelado','borrador')${branchFilter}`,
+    [cid, day, ...branchParams]
   );
   const linesMap = await loadLines(ordersHoy.map((o) => o.id));
   let ventasHoy = 0;
+  const byVendor = new Map<
+    string,
+    import("../types.js").VendorSalesRow
+  >();
   for (const o of ordersHoy) {
     const mapped = mapOrder(o, linesMap.get(o.id) ?? []);
-    ventasHoy += mapped.lines.reduce(
-      (a, l) => a + l.cantidad * l.precioUnitario,
-      0
-    );
-    if (mapped.conEnvio) ventasHoy += mapped.envioCosto;
+    const total = orderAmount(mapped);
+    ventasHoy += total;
+    const key = mapped.vendedorId ?? "__sin__";
+    const prev = byVendor.get(key) ?? {
+      vendedorId: mapped.vendedorId ?? null,
+      vendedorNombre: mapped.vendedorNombre ?? "Sin asignar",
+      branchId: mapped.branchId ?? null,
+      branchNombre: mapped.branchNombre ?? null,
+      tickets: 0,
+      total: 0,
+    };
+    prev.tickets += 1;
+    prev.total += total;
+    byVendor.set(key, prev);
   }
 
   return {
@@ -456,6 +579,62 @@ export async function dashboardStats(todayIso?: string): Promise<{
     clientes: Number(cli?.n ?? 0),
     pedidosAbiertos: Number(abiertos?.n ?? 0),
     ventasHoy,
-    stockBajo: Number(stock?.n ?? 0),
+    stockBajo,
+    scope: branchId ? "branch" : "all",
+    branchId: branchId ?? null,
+    ventasPorVendedor: [...byVendor.values()].sort((a, b) => b.total - a.total),
   };
+}
+
+export async function salesByVendor(input: {
+  comercioId?: string;
+  branchId?: string | null;
+  from?: string;
+  to?: string;
+  canal?: OrderCanal;
+}): Promise<import("../types.js").VendorSalesRow[]> {
+  const { getDefaultComercioId } = await import("./comercios.js");
+  const cid = input.comercioId || (await getDefaultComercioId());
+  const params: Array<string> = [cid];
+  let sql = `${ORDER_SELECT}
+    WHERE o.comercio_id = ?
+      AND o.status NOT IN ('cancelado','borrador')`;
+  if (input.branchId) {
+    sql += ` AND o.branch_id = ?`;
+    params.push(input.branchId);
+  }
+  if (input.canal) {
+    sql += ` AND o.canal = ?`;
+    params.push(input.canal);
+  }
+  if (input.from) {
+    sql += ` AND DATE(o.created_at) >= ?`;
+    params.push(input.from);
+  }
+  if (input.to) {
+    sql += ` AND DATE(o.created_at) <= ?`;
+    params.push(input.to);
+  }
+  sql += ` ORDER BY o.created_at DESC`;
+
+  const rows = await query<OrderRow[]>(sql, params);
+  const linesMap = await loadLines(rows.map((r) => r.id));
+  const byVendor = new Map<string, import("../types.js").VendorSalesRow>();
+  for (const o of rows) {
+    const mapped = mapOrder(o, linesMap.get(o.id) ?? []);
+    const total = orderAmount(mapped);
+    const key = `${mapped.vendedorId ?? "__sin__"}::${mapped.branchId ?? "__all__"}`;
+    const prev = byVendor.get(key) ?? {
+      vendedorId: mapped.vendedorId ?? null,
+      vendedorNombre: mapped.vendedorNombre ?? "Sin asignar",
+      branchId: mapped.branchId ?? null,
+      branchNombre: mapped.branchNombre ?? null,
+      tickets: 0,
+      total: 0,
+    };
+    prev.tickets += 1;
+    prev.total += total;
+    byVendor.set(key, prev);
+  }
+  return [...byVendor.values()].sort((a, b) => b.total - a.total);
 }

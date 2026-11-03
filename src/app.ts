@@ -18,8 +18,8 @@ export function createApp() {
 
   app.get("/", (_req, res) => {
     res.json({
-      name: "template-retail-api",
-      version: "0.1.0",
+      name: "retail-360-api",
+      version: "0.2.0",
       health: "/api/health",
     });
   });

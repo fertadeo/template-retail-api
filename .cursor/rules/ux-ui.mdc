@@ -1,0 +1,14 @@
+---
+description: Preferencias de dominio/API alineadas a la UX Musicanoba
+globs:
+  - src/**/*.ts
+alwaysApply: false
+---
+
+# API ↔ UX Musicanoba
+
+Ver `docs/UX_UI.md`.
+
+- Comercio = local; no forzar sucursal default ni PBS al crear productos.
+- Soft delete comercios vía DELETE + restore; proteger el único activo; sacar de stock-share al archivar.
+- Errores en español útiles para banners/modales del front.

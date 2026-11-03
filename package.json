@@ -1,8 +1,8 @@
 {
   "name": "template-retail-api",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Gold API Aurix Retail — Express + MySQL (single-tenant por instancia).",
+  "description": "Gold API Aurix Retail — Express + MySQL (comercios, canales WC/ML, media, usuarios).",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

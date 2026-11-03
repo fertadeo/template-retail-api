@@ -3,10 +3,12 @@ import { execute, query } from "../db/pool.js";
 import { HttpError } from "../lib/http.js";
 import { nextId } from "../lib/ids.js";
 import type { Client } from "../types.js";
+import { getDefaultComercioId } from "./comercios.js";
 import { getDefaultPriceListId, getPriceList } from "./price-lists.js";
 
 type ClientRow = RowDataPacket & {
   id: string;
+  comercio_id: string | null;
   nombre: string;
   email: string;
   telefono: string;
@@ -19,6 +21,7 @@ type ClientRow = RowDataPacket & {
 function map(row: ClientRow): Client {
   return {
     id: row.id,
+    comercioId: row.comercio_id,
     nombre: row.nombre,
     email: row.email,
     telefono: row.telefono,
@@ -29,9 +32,11 @@ function map(row: ClientRow): Client {
   };
 }
 
-export async function listClients(): Promise<Client[]> {
+export async function listClients(comercioId?: string): Promise<Client[]> {
+  const cid = comercioId || (await getDefaultComercioId());
   const rows = await query<ClientRow[]>(
-    `SELECT * FROM clients ORDER BY nombre ASC`
+    `SELECT * FROM clients WHERE comercio_id = ? ORDER BY nombre ASC`,
+    [cid]
   );
   return rows.map(map);
 }
@@ -46,6 +51,7 @@ export async function getClient(id: string): Promise<Client | null> {
 
 export async function upsertClient(input: {
   id?: string;
+  comercioId?: string;
   nombre: string;
   email?: string;
   telefono?: string;
@@ -56,6 +62,7 @@ export async function upsertClient(input: {
 }): Promise<Client> {
   const nombre = input.nombre.trim();
   if (!nombre) throw new HttpError(400, "El nombre es obligatorio.");
+  const comercioId = input.comercioId || (await getDefaultComercioId());
 
   let priceListId: string | null = input.priceListId ?? null;
   if (priceListId) {
@@ -73,9 +80,19 @@ export async function upsertClient(input: {
     const result = await execute(
       `UPDATE clients
        SET nombre = ?, email = ?, telefono = ?, direccion = ?,
-           rfc = ?, notas = ?, price_list_id = ?
+           rfc = ?, notas = ?, price_list_id = ?, comercio_id = ?
        WHERE id = ?`,
-      [nombre, email, telefono, direccion, rfc, notas, priceListId, input.id]
+      [
+        nombre,
+        email,
+        telefono,
+        direccion,
+        rfc,
+        notas,
+        priceListId,
+        comercioId,
+        input.id,
+      ]
     );
     if (result.affectedRows === 0) {
       throw new HttpError(404, "Cliente no encontrado.");
@@ -88,9 +105,9 @@ export async function upsertClient(input: {
   const id = nextId("c");
   await execute(
     `INSERT INTO clients
-     (id, nombre, email, telefono, direccion, rfc, notas, price_list_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, nombre, email, telefono, direccion, rfc, notas, priceListId]
+     (id, comercio_id, nombre, email, telefono, direccion, rfc, notas, price_list_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, comercioId, nombre, email, telefono, direccion, rfc, notas, priceListId]
   );
   const created = await getClient(id);
   if (!created) throw new HttpError(500, "No se pudo crear el cliente.");
@@ -98,7 +115,8 @@ export async function upsertClient(input: {
 }
 
 export async function resolveClientPriceListId(
-  clientId: string | null | undefined
+  clientId: string | null | undefined,
+  comercioId?: string
 ): Promise<string> {
   if (clientId) {
     const client = await getClient(clientId);
@@ -107,5 +125,5 @@ export async function resolveClientPriceListId(
       if (list?.activa) return list.id;
     }
   }
-  return getDefaultPriceListId();
+  return getDefaultPriceListId(comercioId);
 }

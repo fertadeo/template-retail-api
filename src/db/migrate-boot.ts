@@ -9,7 +9,7 @@ import { env } from "../config/env.js";
  */
 export async function migrateOnBoot(): Promise<void> {
   if (!env.dbEnabled) {
-    console.warn("[template-retail-api] skip migrate: DB no configurada");
+    console.warn("[retail-360-api] skip migrate: DB no configurada");
     return;
   }
 
@@ -20,7 +20,7 @@ export async function migrateOnBoot(): Promise<void> {
   ];
   const sqlDir = candidates.find((p) => fs.existsSync(p));
   if (!sqlDir) {
-    console.warn("[template-retail-api] skip migrate: no hay carpeta sql/");
+    console.warn("[retail-360-api] skip migrate: no hay carpeta sql/");
     return;
   }
   const conn = await mysql.createConnection({
@@ -45,7 +45,7 @@ export async function migrateOnBoot(): Promise<void> {
       await conn.query(sql);
     }
     console.log(
-      `[template-retail-api] migrate ok (${files.length} files) → ${env.dbName}`
+      `[retail-360-api] migrate ok (${files.length} files) → ${env.dbName}`
     );
   } finally {
     await conn.end();

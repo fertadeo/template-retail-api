@@ -1,11 +1,13 @@
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
-import { execute, query, withTransaction } from "../db/pool.js";
+import { query, withTransaction } from "../db/pool.js";
 import { HttpError } from "../lib/http.js";
 import { nextId, slugCodigo } from "../lib/ids.js";
 import type { PriceList } from "../types.js";
+import { getDefaultComercioId } from "./comercios.js";
 
 type PlRow = RowDataPacket & {
   id: string;
+  comercio_id: string | null;
   nombre: string;
   codigo: string;
   activa: number;
@@ -15,6 +17,7 @@ type PlRow = RowDataPacket & {
 function map(row: PlRow): PriceList {
   return {
     id: row.id,
+    comercioId: row.comercio_id,
     nombre: row.nombre,
     codigo: row.codigo,
     activa: Boolean(row.activa),
@@ -22,11 +25,15 @@ function map(row: PlRow): PriceList {
   };
 }
 
-export async function listPriceLists(onlyActive = false): Promise<PriceList[]> {
+export async function listPriceLists(
+  onlyActive = false,
+  comercioId?: string
+): Promise<PriceList[]> {
+  const cid = comercioId || (await getDefaultComercioId());
   const sql = onlyActive
-    ? `SELECT * FROM price_lists WHERE activa = 1 ORDER BY es_default DESC, nombre ASC`
-    : `SELECT * FROM price_lists ORDER BY es_default DESC, nombre ASC`;
-  const rows = await query<PlRow[]>(sql);
+    ? `SELECT * FROM price_lists WHERE comercio_id = ? AND activa = 1 ORDER BY es_default DESC, nombre ASC`
+    : `SELECT * FROM price_lists WHERE comercio_id = ? ORDER BY es_default DESC, nombre ASC`;
+  const rows = await query<PlRow[]>(sql, [cid]);
   return rows.map(map);
 }
 
@@ -38,13 +45,19 @@ export async function getPriceList(id: string): Promise<PriceList | null> {
   return rows[0] ? map(rows[0]) : null;
 }
 
-export async function getDefaultPriceListId(): Promise<string> {
+export async function getDefaultPriceListId(
+  comercioId?: string
+): Promise<string> {
+  const cid = comercioId || (await getDefaultComercioId());
   const rows = await query<PlRow[]>(
-    `SELECT * FROM price_lists WHERE es_default = 1 AND activa = 1 LIMIT 1`
+    `SELECT * FROM price_lists
+     WHERE comercio_id = ? AND es_default = 1 AND activa = 1 LIMIT 1`,
+    [cid]
   );
   if (rows[0]) return rows[0].id;
   const any = await query<PlRow[]>(
-    `SELECT * FROM price_lists WHERE activa = 1 ORDER BY nombre ASC LIMIT 1`
+    `SELECT * FROM price_lists WHERE comercio_id = ? AND activa = 1 ORDER BY nombre ASC LIMIT 1`,
+    [cid]
   );
   if (!any[0]) throw new HttpError(400, "No hay listas de precios activas.");
   return any[0].id;
@@ -55,6 +68,7 @@ export async function createPriceList(input: {
   codigo?: string;
   activa?: boolean;
   esDefault?: boolean;
+  comercioId?: string;
 }): Promise<PriceList> {
   const nombre = input.nombre.trim();
   if (!nombre) throw new HttpError(400, "El nombre es obligatorio.");
@@ -62,15 +76,19 @@ export async function createPriceList(input: {
   const id = nextId("pl");
   const activa = input.activa !== false ? 1 : 0;
   const esDefault = input.esDefault ? 1 : 0;
+  const comercioId = input.comercioId || (await getDefaultComercioId());
 
   await withTransaction(async (conn) => {
     if (esDefault) {
-      await conn.execute(`UPDATE price_lists SET es_default = 0`);
+      await conn.execute(
+        `UPDATE price_lists SET es_default = 0 WHERE comercio_id = ?`,
+        [comercioId]
+      );
     }
     await conn.execute(
-      `INSERT INTO price_lists (id, nombre, codigo, activa, es_default)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, nombre, codigo, activa, esDefault]
+      `INSERT INTO price_lists (id, comercio_id, nombre, codigo, activa, es_default)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, comercioId, nombre, codigo, activa, esDefault]
     );
   });
 
@@ -107,8 +125,11 @@ export async function updatePriceList(
   if (!nombre) throw new HttpError(400, "El nombre es obligatorio.");
 
   await withTransaction(async (conn) => {
-    if (esDefault) {
-      await conn.execute(`UPDATE price_lists SET es_default = 0`);
+    if (esDefault && current.comercioId) {
+      await conn.execute(
+        `UPDATE price_lists SET es_default = 0 WHERE comercio_id = ?`,
+        [current.comercioId]
+      );
     }
     const [result] = await conn.execute<ResultSetHeader>(
       `UPDATE price_lists

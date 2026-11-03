@@ -2,7 +2,7 @@
 module.exports = {
   apps: [
     {
-      name: "template-retail-api",
+      name: "retail-360-api",
       script: "dist/index.js",
       instances: 1,
       exec_mode: "fork",
