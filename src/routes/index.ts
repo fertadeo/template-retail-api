@@ -14,6 +14,7 @@ import * as meliNotifSvc from "../services/meli-notifications.js";
 import * as ordersSvc from "../services/orders.js";
 import * as priceListsSvc from "../services/price-lists.js";
 import * as productsSvc from "../services/products.js";
+import { importProductFromUrl } from "../services/product-import.js";
 import * as quotesSvc from "../services/quotes.js";
 import * as usersSvc from "../services/users.js";
 import { testConnection } from "../db/pool.js";
@@ -127,6 +128,16 @@ apiRouter.get("/products", async (req, res) => {
   try {
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
     res.json(await productsSvc.listProducts(comercioId));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.post("/products/import-from-url", async (req, res) => {
+  try {
+    const { url } = z.object({ url: z.string().min(1) }).parse(req.body);
+    const draft = await importProductFromUrl(url);
+    res.json({ draft });
   } catch (err) {
     sendError(res, err);
   }

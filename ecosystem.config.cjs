@@ -1,4 +1,7 @@
-/** PM2 opcional — el provisioner también puede usar `npm start`. */
+/**
+ * PM2 local/manual. El provisioner Fenec arranca `dist/index.js`
+ * con nombre `aurix-api-{slug}` (no usa este archivo).
+ */
 module.exports = {
   apps: [
     {
