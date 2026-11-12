@@ -4,10 +4,23 @@ import { fileURLToPath } from "node:url";
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 
-dotenv.config();
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
+const envPath = path.join(root, ".env");
+
+const loaded = dotenv.config({ path: envPath, override: true, quiet: true });
+if (loaded.error) {
+  console.warn(`[migrate] no se leyó ${envPath}: ${loaded.error.message}`);
+} else {
+  const n = Object.keys(loaded.parsed || {}).length;
+  if (n === 0) {
+    console.warn(
+      `[migrate] ${envPath} no tiene variables KEY=value. Se usan defaults (root sin password).`
+    );
+  } else {
+    console.log(`[migrate] ${n} vars desde ${envPath}`);
+  }
+}
 
 const host = process.env.DB_HOST || "127.0.0.1";
 const port = Number(process.env.DB_PORT || 3306);
