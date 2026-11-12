@@ -17,6 +17,7 @@ import * as productsSvc from "../services/products.js";
 import { importProductFromUrl } from "../services/product-import.js";
 import * as quotesSvc from "../services/quotes.js";
 import * as usersSvc from "../services/users.js";
+import * as catalogSvc from "../services/catalog.js";
 import { testConnection } from "../db/pool.js";
 
 export const apiRouter = Router();
@@ -1292,6 +1293,131 @@ apiRouter.delete("/media/:id", async (req, res) => {
   try {
     await mediaSvc.deleteMedia(req.params.id);
     res.status(204).end();
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+async function catalogComercioId(req: Parameters<typeof readComercioId>[0]) {
+  return comerciosSvc.resolveComercioId(readComercioId(req));
+}
+
+/* —— Catálogo público / WhatsApp —— */
+apiRouter.get("/catalog/public", async (req, res) => {
+  try {
+    const comercioId = await catalogComercioId(req);
+    res.json(await catalogSvc.getPublicCatalog(comercioId));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.get("/catalog/public/products/:id", async (req, res) => {
+  try {
+    const comercioId = await catalogComercioId(req);
+    const product = await catalogSvc.getPublicCatalogProduct(
+      comercioId,
+      req.params.id
+    );
+    if (!product) {
+      res.status(404).json({ error: "Producto no encontrado." });
+      return;
+    }
+    res.json({ product });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.get("/catalog/public/media/:id", async (req, res) => {
+  try {
+    const media = await catalogSvc.getPublicMediaBinary(req.params.id);
+    if (!media) {
+      res.status(404).json({ error: "Imagen no encontrada." });
+      return;
+    }
+    if ("redirect" in media) {
+      res.redirect(media.redirect);
+      return;
+    }
+    res.setHeader("Content-Type", media.mime);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(media.body);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.post("/catalog/public/orders", async (req, res) => {
+  try {
+    const comercioId = await catalogComercioId(req);
+    const body = z
+      .object({
+        buyerName: z.string().optional(),
+        buyerPhone: z.string().optional(),
+        buyerNote: z.string().optional(),
+        items: z
+          .array(
+            z.object({
+              productId: z.string().optional(),
+              quantity: z.number().optional(),
+            })
+          )
+          .optional(),
+      })
+      .parse(req.body ?? {});
+    const result = await catalogSvc.createPublicCatalogOrder(comercioId, body);
+    res.status(201).json(result);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.get("/catalog/settings", async (req, res) => {
+  try {
+    const comercioId = await catalogComercioId(req);
+    res.json({ settings: await catalogSvc.getCatalogSettings(comercioId) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.put("/catalog/settings", async (req, res) => {
+  try {
+    const comercioId = await catalogComercioId(req);
+    const body = z
+      .object({
+        whatsappPhone: z.string().optional(),
+        orderTtlHours: z.union([z.number(), z.string()]).optional(),
+        publicEnabled: z.boolean().optional(),
+      })
+      .parse(req.body ?? {});
+    const settings = await catalogSvc.saveCatalogSettings(comercioId, body);
+    res.json({ ok: true, settings });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.get("/catalog/orders", async (req, res) => {
+  try {
+    const comercioId = await catalogComercioId(req);
+    res.json({ orders: await catalogSvc.listCatalogOrders(comercioId) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.patch("/catalog/orders/:id", async (req, res) => {
+  try {
+    const comercioId = await catalogComercioId(req);
+    const body = z.object({ status: z.string() }).parse(req.body ?? {});
+    const order = await catalogSvc.updateCatalogOrderStatus(
+      comercioId,
+      req.params.id,
+      body.status
+    );
+    res.json({ order });
   } catch (err) {
     sendError(res, err);
   }
