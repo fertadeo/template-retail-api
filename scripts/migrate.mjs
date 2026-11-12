@@ -10,16 +10,35 @@ const envPath = path.join(root, ".env");
 
 const loaded = dotenv.config({ path: envPath, override: true, quiet: true });
 if (loaded.error) {
-  console.warn(`[migrate] no se leyó ${envPath}: ${loaded.error.message}`);
+  const err = loaded.error;
+  let extra = "";
+  if (err.code === "EACCES") {
+    try {
+      const st = fs.statSync(envPath);
+      extra = ` chmod ${(st.mode & 0o777).toString(8)} uid=${st.uid} euid=${process.geteuid?.()}`;
+    } catch {
+      /* ignore */
+    }
+    console.error(
+      `[migrate] sin permiso para leer ${envPath}${extra}. Corré el migrate como el dueño del archivo.`
+    );
+  } else {
+    console.error(`[migrate] no se leyó ${envPath}: ${err.message}`);
+  }
 } else {
   const n = Object.keys(loaded.parsed || {}).length;
   if (n === 0) {
-    console.warn(
-      `[migrate] ${envPath} no tiene variables KEY=value. Se usan defaults (root sin password).`
-    );
+    console.warn(`[migrate] ${envPath} no tiene variables KEY=value.`);
   } else {
     console.log(`[migrate] ${n} vars desde ${envPath}`);
   }
+}
+
+if (!String(process.env.DB_USER || "").trim() && !String(process.env.DB_PASSWORD || "").trim()) {
+  console.error(
+    "[migrate] abortado: no hay DB_USER/DB_PASSWORD. No se intenta root sin password."
+  );
+  process.exit(1);
 }
 
 const host = process.env.DB_HOST || "127.0.0.1";
