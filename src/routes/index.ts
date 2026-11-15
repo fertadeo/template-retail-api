@@ -18,6 +18,7 @@ import { importProductFromUrl } from "../services/product-import.js";
 import * as quotesSvc from "../services/quotes.js";
 import * as usersSvc from "../services/users.js";
 import * as catalogSvc from "../services/catalog.js";
+import * as categoriesSvc from "../services/categories.js";
 import { testConnection } from "../db/pool.js";
 
 export const apiRouter = Router();
@@ -124,6 +125,48 @@ apiRouter.post("/price-lists/:id/set-default", async (req, res) => {
   }
 });
 
+/* —— Categories —— */
+apiRouter.get("/categories", async (req, res) => {
+  try {
+    const onlyActive = req.query.active === "1" || req.query.active === "true";
+    const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
+    res.json(await categoriesSvc.listCategories(onlyActive, comercioId));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.post("/categories", async (req, res) => {
+  try {
+    const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
+    const body = z
+      .object({
+        nombre: z.string(),
+        codigo: z.string().optional(),
+      })
+      .parse(req.body);
+    res.status(201).json(
+      await categoriesSvc.createCategory({ ...body, comercioId })
+    );
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+apiRouter.patch("/categories/:id", async (req, res) => {
+  try {
+    const body = z
+      .object({
+        nombre: z.string().optional(),
+        activa: z.boolean().optional(),
+      })
+      .parse(req.body);
+    res.json(await categoriesSvc.updateCategory(req.params.id, body));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 /* —— Products —— */
 apiRouter.get("/products", async (req, res) => {
   try {
@@ -162,7 +205,7 @@ const productBody = z.object({
   comercioId: z.string().optional(),
   sku: z.string(),
   nombre: z.string(),
-  categoria: z.enum(["bebidas", "alimentos", "limpieza", "otros"]),
+  categoria: z.string().trim().min(1).max(64),
   costo: z.number(),
   stock: z.number(),
   stockByBranch: z.record(z.string(), z.number()).optional(),

@@ -303,6 +303,11 @@ async function loadPublicProducts(
     onlyId ? [comercioId, onlyId] : [comercioId]
   );
   const ids = rows.map((r) => r.id);
+  const catRows = await query<(RowDataPacket & { codigo: string; nombre: string })[]>(
+    `SELECT codigo, nombre FROM categories WHERE comercio_id = ?`,
+    [comercioId]
+  );
+  const categoryName = new Map(catRows.map((c) => [c.codigo, c.nombre]));
   const [prices, images] = await Promise.all([
     loadDefaultPrices(comercioId, ids),
     loadPublicImages(ids),
@@ -313,7 +318,7 @@ async function loadPublicProducts(
       id: r.id,
       name: r.nombre,
       sku: r.sku,
-      category: r.categoria,
+      category: categoryName.get(r.categoria) ?? r.categoria,
       description: r.descripcion ?? "",
       unitPrice: prices.get(r.id) ?? num(r.precio_default),
       currency: DEFAULT_CURRENCY,

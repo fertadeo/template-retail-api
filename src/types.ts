@@ -1,8 +1,5 @@
-export type ProductCategory =
-  | "bebidas"
-  | "alimentos"
-  | "limpieza"
-  | "otros";
+/** Código de categoría del comercio (`categories.codigo`). */
+export type ProductCategory = string;
 
 export type PriceList = {
   id: string;
@@ -120,6 +117,8 @@ export type Product = {
   sku: string;
   nombre: string;
   categoria: ProductCategory;
+  /** Nombre visible. Null si el código ya no existe. */
+  categoriaNombre?: string | null;
   precio: number;
   precios: Record<string, number>;
   costo: number;

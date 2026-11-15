@@ -1,3 +1,4 @@
+import { slugCodigo } from "../lib/ids.js";
 import type { ProductCategory } from "../types.js";
 
 export type ImportedProductImage = {
@@ -13,6 +14,8 @@ export type ImportedProductDraft = {
   descripcion: string;
   precio: number;
   categoria: ProductCategory;
+  /** Nombre detectado en la ficha. Vacío si solo hay una categoría estimada. */
+  categoriaNombre?: string;
   sourceUrl: string;
   images: ImportedProductImage[];
   warnings: string[];
@@ -76,6 +79,57 @@ function parseTiendaNubeCents(raw: string): number | null {
   if (!Number.isFinite(n) || n <= 0) return null;
   if (n >= 1000) return Math.round(n) / 100;
   return n;
+}
+
+function cleanCategoryName(raw: string): string {
+  const name = decodeEntities(raw).replace(/\s+/g, " ").trim();
+  if (name.length < 2 || name.length > 80) return "";
+  if (
+    /^(inicio|home|productos?|tienda|cat[aá]logo|uncategorized|simple|variable)$/i.test(
+      name
+    )
+  ) {
+    return "";
+  }
+  return name;
+}
+
+function extractCategoryName(html: string, productName: string): string {
+  const product = productName.trim().toLowerCase();
+  const accept = (raw: string) => {
+    const name = cleanCategoryName(raw);
+    if (!name || name.toLowerCase() === product) return "";
+    return name;
+  };
+
+  const crumbBlock = html.match(/BreadcrumbList[\s\S]{0,2500}/i)?.[0] ?? "";
+  if (crumbBlock) {
+    const names = [...crumbBlock.matchAll(/"name"\s*:\s*"([^"]+)"/g)]
+      .map((m) => accept(m[1]))
+      .filter(Boolean);
+    if (names.length) return names[names.length - 1];
+  }
+
+  const nav = html.match(/class=["'][^"']*breadcrumb[^"']*["'][\s\S]{0,1800}/i)?.[0];
+  if (nav) {
+    const links = [...nav.matchAll(/<a[^>]*>([^<]+)<\/a>/gi)]
+      .map((m) => accept(m[1]))
+      .filter(Boolean);
+    if (links.length) return links[links.length - 1];
+  }
+
+  const patterns = [
+    /property=["']product:category["'][^>]*content=["']([^"']+)["']/i,
+    /content=["']([^"']+)["'][^>]*property=["']product:category["']/i,
+    /itemprop=["']category["'][^>]*>([^<]+)</i,
+    /"category"\s*:\s*"([^"]+)"/i,
+    /"product_category"\s*:\s*"([^"]+)"/i,
+  ];
+  for (const re of patterns) {
+    const name = accept(html.match(re)?.[1] ?? "");
+    if (name) return name;
+  }
+  return "";
 }
 
 function guessCategory(name: string, description: string): ProductCategory {
@@ -343,12 +397,19 @@ export async function importProductFromUrl(
     });
   }
 
+  const nombre = nombreRaw.slice(0, 200);
+  const categoriaNombre = extractCategoryName(html, nombre);
+  const categoria = categoriaNombre
+    ? slugCodigo(categoriaNombre).replace(/-/g, "_")
+    : guessCategory(nombre, descripcionRaw);
+
   return {
-    nombre: nombreRaw.slice(0, 200),
+    nombre,
     sku,
     descripcion: descripcionRaw.slice(0, 4000),
     precio,
-    categoria: guessCategory(nombreRaw, descripcionRaw),
+    categoria,
+    categoriaNombre,
     sourceUrl,
     images,
     warnings,

@@ -18,6 +18,10 @@ import {
   splitProductImages,
 } from "./media.js";
 import { getDefaultPriceListId } from "./price-lists.js";
+import {
+  assertCategoryCodigo,
+  listCategories,
+} from "./categories.js";
 
 type ProdRow = RowDataPacket & {
   id: string;
@@ -168,6 +172,30 @@ async function decorate(
   return enrichProductsWithLinks(withStock);
 }
 
+async function withCategoryNames(products: Product[]): Promise<Product[]> {
+  if (!products.length) return products;
+  const comercioIds = [
+    ...new Set(
+      products
+        .map((p) => p.comercioId)
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
+  const names = new Map<string, string>();
+  await Promise.all(
+    comercioIds.map(async (cid) => {
+      const cats = await listCategories(false, cid);
+      for (const cat of cats) names.set(`${cid}|${cat.codigo}`, cat.nombre);
+    })
+  );
+  return products.map((p) => ({
+    ...p,
+    categoriaNombre: p.comercioId
+      ? (names.get(`${p.comercioId}|${p.categoria}`) ?? null)
+      : null,
+  }));
+}
+
 export async function listProducts(comercioId?: string): Promise<Product[]> {
   const cid = comercioId || (await getDefaultComercioId());
   const rows = await query<ProdRow[]>(
@@ -182,7 +210,7 @@ export async function listProducts(comercioId?: string): Promise<Product[]> {
   const base = rows.map((r) =>
     mapProduct(r, precios.get(r.id) ?? {}, sold.get(r.id) ?? 0)
   );
-  return decorate(base, { images: "primary" });
+  return withCategoryNames(await decorate(base, { images: "primary" }));
 }
 
 export async function getProduct(id: string): Promise<Product | null> {
@@ -196,9 +224,11 @@ export async function getProduct(id: string): Promise<Product | null> {
     loadPrecios([id]),
     loadUnitsSold([id], cid),
   ]);
-  const [enriched] = await decorate(
-    [mapProduct(rows[0], precios.get(id) ?? {}, sold.get(id) ?? 0)],
-    { images: "all" }
+  const [enriched] = await withCategoryNames(
+    await decorate(
+      [mapProduct(rows[0], precios.get(id) ?? {}, sold.get(id) ?? 0)],
+      { images: "all" }
+    )
   );
   return enriched ?? null;
 }
@@ -222,6 +252,16 @@ export async function upsertProduct(input: {
     throw new HttpError(400, "SKU y nombre son obligatorios.");
   }
   const comercioId = input.comercioId || (await getDefaultComercioId());
+  const categoria = input.categoria.trim();
+  let allowInactive = false;
+  if (input.id) {
+    const current = await query<(RowDataPacket & { categoria: string })[]>(
+      `SELECT categoria FROM products WHERE id = ? LIMIT 1`,
+      [input.id]
+    );
+    allowInactive = current[0]?.categoria === categoria;
+  }
+  await assertCategoryCodigo(comercioId, categoria, { allowInactive });
   const defaultListId = await getDefaultPriceListId(comercioId);
   const precioDefault =
     input.precios[defaultListId] ??
@@ -240,7 +280,7 @@ export async function upsertProduct(input: {
         [
           sku,
           nombre,
-          input.categoria,
+          categoria,
           precioDefault,
           input.costo,
           input.stock,
@@ -266,7 +306,7 @@ export async function upsertProduct(input: {
           comercioId,
           sku,
           nombre,
-          input.categoria,
+          categoria,
           precioDefault,
           input.costo,
           input.stock,
