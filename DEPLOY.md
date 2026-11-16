@@ -1,4 +1,4 @@
-# Deploy VPS — Aurix API Musicanoba
+# Deploy VPS — Aurix Retail local
 
 ## Comando normal
 

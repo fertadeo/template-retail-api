@@ -2,7 +2,7 @@
   "name": "template-retail-api",
   "version": "0.3.0",
   "private": true,
-  "description": "Gold API Aurix Retail \u2014 Express + MySQL (comercios, canales WC/ML, media, usuarios).",
+  "description": "API Aurix Retail para venta local — Express + MySQL.",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
