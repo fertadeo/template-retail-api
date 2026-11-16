@@ -3,16 +3,7 @@ import { query, withTransaction } from "../db/pool.js";
 import { HttpError } from "../lib/http.js";
 import { nextId } from "../lib/ids.js";
 import type { Product, ProductCategory, ProductImage } from "../types.js";
-import {
-  getProductsStockByBranch,
-  setProductBranchStock,
-} from "./branches.js";
-import { enrichProductsWithLinks } from "./channels.js";
-import {
-  findShareGroupForComercio,
-  getDefaultComercioId,
-  setProductStock,
-} from "./comercios.js";
+import { getDefaultComercioId } from "./comercios.js";
 import {
   loadImagesForProducts,
   splitProductImages,
@@ -129,47 +120,11 @@ async function decorate(
   const imageMode = opts?.images ?? "all";
   const productIds = products.map((p) => p.id);
 
-  // Batch: evita N+1 que saturaba el pool (Queue limit reached).
-  const [imageMap, stockMap] = await Promise.all([
-    imageMode === "none"
-      ? Promise.resolve(new Map())
-      : loadImagesForProducts(productIds, {
-          primaryOnly: imageMode === "primary",
-        }),
-    getProductsStockByBranch(productIds),
-  ]);
-
-  const uniqueComercioIds = [
-    ...new Set(
-      products
-        .map((p) => p.comercioId)
-        .filter((id): id is string => Boolean(id))
-    ),
-  ];
-  const shareFlags = new Map<string, boolean>();
-  await Promise.all(
-    uniqueComercioIds.map(async (cid) => {
-      const g = await findShareGroupForComercio(cid);
-      shareFlags.set(cid, g?.modo === "shared");
-    })
-  );
-
-  const withStock = products.map((p) => {
-    const { imagenPrincipal, imagenesSecundarias } = splitProductImages(
-      imageMap.get(p.id) ?? []
-    );
-    return {
-      ...p,
-      stockShared: p.comercioId
-        ? (shareFlags.get(p.comercioId) ?? false)
-        : false,
-      stockByBranch: stockMap.get(p.id) ?? {},
-      imagenPrincipal,
-      imagenesSecundarias:
-        imageMode === "primary" ? [] : imagenesSecundarias,
-    };
+  const imageMap = imageMode === "none" ? new Map<string, ProductImage[]>() : await loadImagesForProducts(productIds, { primaryOnly: imageMode === "primary" });
+  return products.map(p => {
+    const { imagenPrincipal, imagenesSecundarias } = splitProductImages(imageMap.get(p.id) ?? []);
+    return { ...p, imagenPrincipal, imagenesSecundarias: imageMode === "primary" ? [] : imagenesSecundarias };
   });
-  return enrichProductsWithLinks(withStock);
 }
 
 async function withCategoryNames(products: Product[]): Promise<Product[]> {
@@ -293,17 +248,15 @@ export async function listProductsPage(cid: string, opts: ProductPageOptions) {
   const selected = rows.slice(0, opts.pageSize);
   const ids = selected.map(r => r.id);
   const base = selected.map(r => mapProduct(r, {}));
-  const [prices, sold, images, linked, named] = await Promise.all([
+  const [prices, sold, images, named] = await Promise.all([
     loadPrecios(ids),
     opts.pos ? Promise.resolve(new Map<string, number>()) : loadUnitsSold(ids, cid),
     opts.pos ? Promise.resolve(new Map<string, ProductImage[]>()) : loadImagesForProducts(ids, { primaryOnly: true }),
-    opts.pos ? Promise.resolve(base) : enrichProductsWithLinks(base),
     opts.pos ? Promise.resolve(base) : withCategoryNames(base),
   ]);
   const items = base.map((p, index) => ({
     ...p, precios: prices.get(p.id) ?? {}, unitsSold: sold.get(p.id) ?? 0,
     categoriaNombre: named[index].categoriaNombre,
-    channelLinks: linked[index].channelLinks,
     imagenPrincipal: splitProductImages(images.get(p.id) ?? []).imagenPrincipal,
   }));
   return { items, page: opts.page, pageSize: opts.pageSize, hasMore };
@@ -343,6 +296,7 @@ export async function upsertProduct(input: {
   descripcion?: string;
   precios: Record<string, number>;
 }): Promise<Product> {
+  const stock = Math.max(0, Math.floor(input.stock));
   const sku = input.sku.trim().toUpperCase();
   const nombre = input.nombre.trim();
   if (!sku || !nombre) {
@@ -380,7 +334,7 @@ export async function upsertProduct(input: {
           categoria,
           precioDefault,
           input.costo,
-          input.stock,
+          stock,
           input.activo === false ? 0 : 1,
           input.descripcion?.trim() ?? "",
           comercioId,
@@ -406,7 +360,7 @@ export async function upsertProduct(input: {
           categoria,
           precioDefault,
           input.costo,
-          input.stock,
+          stock,
           input.activo === false ? 0 : 1,
           input.descripcion?.trim() ?? "",
         ]
@@ -423,12 +377,6 @@ export async function upsertProduct(input: {
     }
   });
 
-  await setProductStock(id, input.stock);
-
-  // Stock por sucursal solo si el cliente lo pide; el stock del comercio es products.stock.
-  if (input.stockByBranch && Object.keys(input.stockByBranch).length > 0) {
-    await setProductBranchStock(id, input.stockByBranch);
-  }
 
   const product = await getProduct(id);
   if (!product) throw new HttpError(500, "No se pudo guardar el producto.");

@@ -2,23 +2,17 @@ import { login, logout, requireSession } from "../lib/auth.js";
 import { Router } from "express";
 import { z } from "zod";
 import { readComercioId } from "../lib/comercio-req.js";
-import { readBranchId, readVendedorId } from "../lib/scope-req.js";
+
 import { sendError } from "../lib/http.js";
-import * as branchesSvc from "../services/branches.js";
-import { env } from "../config/env.js";
-import * as channelsSvc from "../services/channels.js";
 import * as clientsSvc from "../services/clients.js";
 import * as comerciosSvc from "../services/comercios.js";
 import * as discountRulesSvc from "../services/discount-rules.js";
 import * as mediaSvc from "../services/media.js";
-import * as meliNotifSvc from "../services/meli-notifications.js";
 import * as ordersSvc from "../services/orders.js";
 import * as priceListsSvc from "../services/price-lists.js";
 import * as productsSvc from "../services/products.js";
-import { importProductFromUrl } from "../services/product-import.js";
 import * as quotesSvc from "../services/quotes.js";
 import * as usersSvc from "../services/users.js";
-import * as catalogSvc from "../services/catalog.js";
 import * as categoriesSvc from "../services/categories.js";
 import { testConnection } from "../db/pool.js";
 
@@ -28,6 +22,14 @@ apiRouter.post("/auth/login", login);
 apiRouter.post("/auth/logout", logout);
 apiRouter.get("/auth/session", (_req, res) => {
   res.json({ user: res.locals.user });
+});
+
+// The installation has one local business profile, not a selectable store list.
+apiRouter.get("/business", async (_req, res) => {
+  try {
+    const id = await comerciosSvc.getDefaultComercioId();
+    res.json(await comerciosSvc.getComercio(id));
+  } catch (err) { sendError(res, err); }
 });
 
 apiRouter.get("/health", async (_req, res) => {
@@ -44,7 +46,7 @@ apiRouter.get("/dashboard/stats", async (req, res) => {
     const day =
       typeof req.query.day === "string" ? req.query.day : undefined;
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
-    const branchId = readBranchId(req) ?? null;
+    const branchId = null;
     res.json(await ordersSvc.dashboardStats(day, comercioId, branchId));
   } catch (err) {
     sendError(res, err);
@@ -54,7 +56,7 @@ apiRouter.get("/dashboard/stats", async (req, res) => {
 apiRouter.get("/reports/sales-by-vendor", async (req, res) => {
   try {
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
-    const branchId = readBranchId(req) ?? null;
+    const branchId = null;
     const from =
       typeof req.query.from === "string" ? req.query.from : undefined;
     const to = typeof req.query.to === "string" ? req.query.to : undefined;
@@ -211,16 +213,6 @@ apiRouter.get("/products", async (req, res) => {
   }
 });
 
-apiRouter.post("/products/import-from-url", async (req, res) => {
-  try {
-    const { url } = z.object({ url: z.string().min(1) }).parse(req.body);
-    const draft = await importProductFromUrl(url);
-    res.json({ draft });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
 apiRouter.get("/products/:id", async (req, res) => {
   try {
     const product = await productsSvc.getProduct(req.params.id);
@@ -242,7 +234,6 @@ const productBody = z.object({
   categoria: z.string().trim().min(1).max(64),
   costo: z.number(),
   stock: z.number(),
-  stockByBranch: z.record(z.string(), z.number()).optional(),
   activo: z.boolean().optional(),
   descripcion: z.string().optional(),
   precios: z.record(z.string(), z.number()),
@@ -343,7 +334,7 @@ apiRouter.patch("/clients/:id", async (req, res) => {
 apiRouter.get("/orders", async (req, res) => {
   try {
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
-    const branchId = readBranchId(req) ?? null;
+    const branchId = null;
     const canal = z
       .enum(["pos", "pedido", "mayorista"])
       .optional()
@@ -379,22 +370,20 @@ const lineSchema = z.object({
 apiRouter.post("/orders", async (req, res) => {
   try {
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
-    const branchId = readBranchId(req) ?? req.body?.branchId ?? null;
-    const vendedorId = readVendedorId(req) ?? req.body?.vendedorId ?? null;
+    const branchId = null;
+    const vendedorId = res.locals.user.id;
     const body = z
       .object({
         clientId: z.string(),
         lines: z.array(lineSchema).min(1),
-        branchId: z.string().nullable().optional(),
-        vendedorId: z.string().nullable().optional(),
       })
       .parse(req.body);
     res.status(201).json(
       await ordersSvc.createPedido({
         ...body,
         comercioId,
-        branchId: body.branchId ?? branchId,
-        vendedorId: body.vendedorId ?? vendedorId,
+        branchId,
+        vendedorId,
       })
     );
   } catch (err) {
@@ -405,8 +394,8 @@ apiRouter.post("/orders", async (req, res) => {
 apiRouter.post("/pos/checkout", async (req, res) => {
   try {
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
-    const branchId = readBranchId(req) ?? req.body?.branchId ?? null;
-    const vendedorId = readVendedorId(req) ?? req.body?.vendedorId ?? null;
+    const branchId = null;
+    const vendedorId = res.locals.user.id;
     const body = z
       .object({
         lines: z.array(lineSchema).min(1),
@@ -417,16 +406,14 @@ apiRouter.post("/pos/checkout", async (req, res) => {
         direccionEnvio: z.string().optional(),
         telefonoContacto: z.string().optional(),
         metodoPago: z.enum(["efectivo", "transferencia"]),
-        branchId: z.string().nullable().optional(),
-        vendedorId: z.string().nullable().optional(),
       })
       .parse(req.body);
     res.status(201).json(
       await ordersSvc.createPosSale({
         ...body,
         comercioId,
-        branchId: body.branchId ?? branchId,
-        vendedorId: body.vendedorId ?? vendedorId,
+        branchId,
+        vendedorId,
       })
     );
   } catch (err) {
@@ -437,22 +424,20 @@ apiRouter.post("/pos/checkout", async (req, res) => {
 apiRouter.post("/wholesale/orders", async (req, res) => {
   try {
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
-    const branchId = readBranchId(req) ?? req.body?.branchId ?? null;
-    const vendedorId = readVendedorId(req) ?? req.body?.vendedorId ?? null;
+    const branchId = null;
+    const vendedorId = res.locals.user.id;
     const body = z
       .object({
         clientId: z.string(),
         lines: z.array(lineSchema).min(1),
-        branchId: z.string().nullable().optional(),
-        vendedorId: z.string().nullable().optional(),
       })
       .parse(req.body);
     res.status(201).json(
       await ordersSvc.createMayoristaPedido({
         ...body,
         comercioId,
-        branchId: body.branchId ?? branchId,
-        vendedorId: body.vendedorId ?? vendedorId,
+        branchId,
+        vendedorId,
       })
     );
   } catch (err) {
@@ -467,223 +452,9 @@ apiRouter.get("/wholesale/orders", async (req, res) => {
       await ordersSvc.listOrders(
         "mayorista",
         comercioId,
-        readBranchId(req) ?? null
+        null
       )
     );
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-/* —— Comercios + stock share / rotación —— */
-apiRouter.get("/comercios", async (req, res) => {
-  try {
-    const onlyActive = req.query.active === "1" || req.query.active === "true";
-    res.json(await comerciosSvc.listComercios(onlyActive));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/comercios", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        codigo: z.string(),
-        nombre: z.string(),
-        rubro: z.string().optional(),
-        direccion: z.string().optional(),
-        activa: z.boolean().optional(),
-        esDefault: z.boolean().optional(),
-      })
-      .parse(req.body);
-    res.status(201).json(await comerciosSvc.upsertComercio(body));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.patch("/comercios/:id", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        codigo: z.string(),
-        nombre: z.string(),
-        rubro: z.string().optional(),
-        direccion: z.string().optional(),
-        activa: z.boolean().optional(),
-        esDefault: z.boolean().optional(),
-      })
-      .parse(req.body);
-    res.json(
-      await comerciosSvc.upsertComercio({ ...body, id: req.params.id })
-    );
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/comercios/:id/set-default", async (req, res) => {
-  try {
-    res.json(await comerciosSvc.setDefaultComercio(req.params.id));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.delete("/comercios/:id", async (req, res) => {
-  try {
-    res.json(await comerciosSvc.softDeleteComercio(req.params.id));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/comercios/:id/restore", async (req, res) => {
-  try {
-    res.json(await comerciosSvc.restoreComercio(req.params.id));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.get("/stock-share-groups", async (_req, res) => {
-  try {
-    res.json(await comerciosSvc.listStockShareGroups());
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/stock-share-groups", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        nombre: z.string(),
-        modo: z.enum(["shared", "rotate"]),
-        activa: z.boolean().optional(),
-        comercioIds: z.array(z.string()).min(1),
-      })
-      .parse(req.body);
-    res.status(201).json(await comerciosSvc.upsertStockShareGroup(body));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.patch("/stock-share-groups/:id", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        nombre: z.string(),
-        modo: z.enum(["shared", "rotate"]),
-        activa: z.boolean().optional(),
-        comercioIds: z.array(z.string()).min(1),
-      })
-      .parse(req.body);
-    res.json(
-      await comerciosSvc.upsertStockShareGroup({
-        ...body,
-        id: req.params.id,
-      })
-    );
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.delete("/stock-share-groups/:id", async (req, res) => {
-  try {
-    await comerciosSvc.deleteStockShareGroup(req.params.id);
-    res.status(204).end();
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/stock/transfer", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        fromComercioId: z.string(),
-        toComercioId: z.string(),
-        sku: z.string(),
-        quantity: z.number(),
-      })
-      .parse(req.body);
-    res.json(await comerciosSvc.transferStock(body));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-/* —— Branches (sucursales) —— */
-apiRouter.get("/branches", async (req, res) => {
-  try {
-    const onlyActive = req.query.active === "1" || req.query.active === "true";
-    res.json(await branchesSvc.listBranches(onlyActive));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/branches", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        codigo: z.string(),
-        nombre: z.string(),
-        direccion: z.string().optional(),
-        rubro: z.string().optional(),
-        activa: z.boolean().optional(),
-        esDefault: z.boolean().optional(),
-      })
-      .parse(req.body);
-    res.status(201).json(await branchesSvc.upsertBranch(body));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.patch("/branches/:id", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        codigo: z.string(),
-        nombre: z.string(),
-        direccion: z.string().optional(),
-        rubro: z.string().optional(),
-        activa: z.boolean().optional(),
-        esDefault: z.boolean().optional(),
-      })
-      .parse(req.body);
-    res.json(
-      await branchesSvc.upsertBranch({ ...body, id: req.params.id })
-    );
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/branches/:id/set-default", async (req, res) => {
-  try {
-    res.json(await branchesSvc.setDefaultBranch(req.params.id));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.delete("/branches/:id", async (req, res) => {
-  try {
-    res.json(await branchesSvc.softDeleteBranch(req.params.id));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/branches/:id/restore", async (req, res) => {
-  try {
-    res.json(await branchesSvc.restoreBranch(req.params.id));
   } catch (err) {
     sendError(res, err);
   }
@@ -703,7 +474,6 @@ const userBodySchema = z.object({
   password: z.string().optional(),
   role: userRoleSchema,
   activa: z.boolean().optional(),
-  branchIds: z.array(z.string()).optional(),
   functions: z.array(z.string()).optional(),
 });
 
@@ -772,271 +542,6 @@ apiRouter.post("/users/:id/restore", async (req, res) => {
 });
 
 /* —— Channels (WooCommerce / Mercado Libre) —— */
-apiRouter.get("/channels", async (_req, res) => {
-  try {
-    res.json(await channelsSvc.listChannelConfigs());
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.get("/channels/:channel", async (req, res) => {
-  try {
-    const channel = z.enum(["woocommerce", "mercadolibre"]).parse(req.params.channel);
-    res.json(await channelsSvc.getChannelConfig(channel));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.put("/channels/:channel", async (req, res) => {
-  try {
-    const channel = z.enum(["woocommerce", "mercadolibre"]).parse(req.params.channel);
-    const body = z
-      .object({
-        enabled: z.boolean().optional(),
-        storeUrl: z.string().nullable().optional(),
-        consumerKey: z.string().nullable().optional(),
-        consumerSecret: z.string().nullable().optional(),
-        accessToken: z.string().nullable().optional(),
-        refreshToken: z.string().nullable().optional(),
-        sellerId: z.string().nullable().optional(),
-        siteId: z.string().nullable().optional(),
-        priceListId: z.string().nullable().optional(),
-        stockMode: z.enum(["total", "default_branch", "branch"]).optional(),
-        stockBranchId: z.string().nullable().optional(),
-      })
-      .parse(req.body);
-    res.json(await channelsSvc.saveChannelConfig(channel, body));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.get("/products/:id/channels", async (req, res) => {
-  try {
-    res.json(await channelsSvc.listProductLinks(req.params.id));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.put("/products/:id/channels/:channel", async (req, res) => {
-  try {
-    const channel = z.enum(["woocommerce", "mercadolibre"]).parse(req.params.channel);
-    const body = z
-      .object({
-        externalId: z.string(),
-        externalSku: z.string().optional(),
-        syncEnabled: z.boolean().optional(),
-      })
-      .parse(req.body);
-    res.json(
-      await channelsSvc.upsertProductLink({
-        productId: req.params.id,
-        channel,
-        ...body,
-      })
-    );
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.delete("/products/:id/channels/:channel", async (req, res) => {
-  try {
-    const channel = z.enum(["woocommerce", "mercadolibre"]).parse(req.params.channel);
-    await channelsSvc.deleteProductLink(req.params.id, channel);
-    res.status(204).end();
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/channels/woocommerce/products/:id/push", async (req, res) => {
-  try {
-    const mode = z
-      .enum(["stock", "price", "both", "full"])
-      .optional()
-      .default("both")
-      .parse(req.body?.mode ?? req.query.mode);
-    res.json(await channelsSvc.pushProductToWooCommerce(req.params.id, mode));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/channels/woocommerce/push-all", async (req, res) => {
-  try {
-    const mode = z
-      .enum(["stock", "price", "both", "full"])
-      .optional()
-      .default("both")
-      .parse(req.body?.mode ?? "both");
-    res.json({ results: await channelsSvc.pushAllWooCommerce(mode) });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/channels/woocommerce/link-by-sku", async (_req, res) => {
-  try {
-    res.json(await channelsSvc.linkWooCommerceBySku());
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/channels/woocommerce/pull", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        priceListId: z.string().nullable().optional(),
-        branchId: z.string().nullable().optional(),
-        comercioId: z.string().nullable().optional(),
-        dryRun: z.boolean().optional(),
-      })
-      .optional()
-      .parse(req.body ?? {});
-    const comercioId = await comerciosSvc.resolveComercioId(
-      body?.comercioId || readComercioId(req)
-    );
-    res.json(
-      await channelsSvc.pullProductsFromWooCommerce({
-        comercioId,
-        priceListId: body?.priceListId,
-        branchId: body?.branchId,
-        dryRun: body?.dryRun,
-      })
-    );
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/channels/woocommerce/migrate-prices", async (req, res) => {
-  try {
-    const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
-    const body = z
-      .object({
-        fromPriceListId: z.string(),
-        toPriceListId: z.string().nullable().optional(),
-        newListNombre: z.string().optional(),
-        newListCodigo: z.string().optional(),
-        onlyLinked: z.boolean().optional(),
-        setAsChannelList: z.boolean().optional(),
-      })
-      .parse(req.body);
-    res.json(
-      await channelsSvc.migrateChannelPrices({
-        channel: "woocommerce",
-        fromPriceListId: body.fromPriceListId,
-        toPriceListId: body.toPriceListId,
-        newListNombre: body.newListNombre,
-        newListCodigo: body.newListCodigo,
-        onlyLinked: body.onlyLinked,
-        setAsChannelList: body.setAsChannelList,
-        comercioId,
-      })
-    );
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/channels/mercadolibre/products/:id/push", async (req, res) => {
-  try {
-    const mode = z
-      .enum(["stock", "price", "both"])
-      .optional()
-      .default("both")
-      .parse(req.body?.mode ?? req.query.mode);
-    res.json(await channelsSvc.pushProductToMercadoLibre(req.params.id, mode));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/channels/mercadolibre/push-all", async (req, res) => {
-  try {
-    const mode = z
-      .enum(["stock", "price", "both"])
-      .optional()
-      .default("both")
-      .parse(req.body?.mode ?? "both");
-    res.json({ results: await channelsSvc.pushAllMercadoLibre(mode) });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/channels/mercadolibre/pull", async (req, res) => {
-  try {
-    const body = z
-      .object({
-        priceListId: z.string().nullable().optional(),
-        comercioId: z.string().nullable().optional(),
-        dryRun: z.boolean().optional(),
-      })
-      .optional()
-      .parse(req.body ?? {});
-    const comercioId = await comerciosSvc.resolveComercioId(
-      body?.comercioId || readComercioId(req)
-    );
-    res.json(
-      await channelsSvc.pullProductsFromMercadoLibre({
-        comercioId,
-        priceListId: body?.priceListId,
-        dryRun: body?.dryRun,
-      })
-    );
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-/**
- * Callback público para Developers ML (tópico items, etc.).
- * Responde 200 de inmediato; el trabajo corre en background.
- */
-apiRouter.post("/channels/mercadolibre/notifications", async (req, res) => {
-  try {
-    const body = (req.body ?? {}) as meliNotifSvc.MeliWebhookPayload;
-    const result = await meliNotifSvc.enqueueMeliNotification(body);
-    res.status(200).json({ ok: true, ...result });
-  } catch (err) {
-    // Aun ante error de cola, ML espera 200 para no desactivar el tópico.
-    console.error("[meli-notif] enqueue error", err);
-    res.status(200).json({ ok: false });
-  }
-});
-
-apiRouter.get("/channels/mercadolibre/notifications", async (req, res) => {
-  try {
-    const limit = Number(req.query.limit ?? 40) || 40;
-    res.json(await meliNotifSvc.listMeliNotifications(limit));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.get("/channels/mercadolibre/notifications/callback", async (_req, res) => {
-  try {
-    const path = meliNotifSvc.meliNotificationsCallbackPath();
-    const url = env.publicBaseUrl ? `${env.publicBaseUrl}${path}` : null;
-    res.json({
-      path,
-      url,
-      hint: url
-        ? "Pegá esta URL en Developers → Notificaciones callbacks URL. Tópico recomendado: items."
-        : `Definí PUBLIC_BASE_URL en el API. Path relativo: ${path}`,
-      topicsRecommended: ["items"],
-    });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
 /* —— Descuentos escalonados —— */
 const tierSchema = z.object({
   desde: z.number(),
@@ -1391,131 +896,6 @@ apiRouter.delete("/media/:id", async (req, res) => {
   try {
     await mediaSvc.deleteMedia(req.params.id);
     res.status(204).end();
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-async function catalogComercioId(req: Parameters<typeof readComercioId>[0]) {
-  return comerciosSvc.resolveComercioId(readComercioId(req));
-}
-
-/* —— Catálogo público / WhatsApp —— */
-apiRouter.get("/catalog/public", async (req, res) => {
-  try {
-    const comercioId = await catalogComercioId(req);
-    res.json(await catalogSvc.getPublicCatalog(comercioId));
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.get("/catalog/public/products/:id", async (req, res) => {
-  try {
-    const comercioId = await catalogComercioId(req);
-    const product = await catalogSvc.getPublicCatalogProduct(
-      comercioId,
-      req.params.id
-    );
-    if (!product) {
-      res.status(404).json({ error: "Producto no encontrado." });
-      return;
-    }
-    res.json({ product });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.get("/catalog/public/media/:id", async (req, res) => {
-  try {
-    const media = await catalogSvc.getPublicMediaBinary(req.params.id);
-    if (!media) {
-      res.status(404).json({ error: "Imagen no encontrada." });
-      return;
-    }
-    if ("redirect" in media) {
-      res.redirect(media.redirect);
-      return;
-    }
-    res.setHeader("Content-Type", media.mime);
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    res.send(media.body);
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.post("/catalog/public/orders", async (req, res) => {
-  try {
-    const comercioId = await catalogComercioId(req);
-    const body = z
-      .object({
-        buyerName: z.string().optional(),
-        buyerPhone: z.string().optional(),
-        buyerNote: z.string().optional(),
-        items: z
-          .array(
-            z.object({
-              productId: z.string().optional(),
-              quantity: z.number().optional(),
-            })
-          )
-          .optional(),
-      })
-      .parse(req.body ?? {});
-    const result = await catalogSvc.createPublicCatalogOrder(comercioId, body);
-    res.status(201).json(result);
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.get("/catalog/settings", async (req, res) => {
-  try {
-    const comercioId = await catalogComercioId(req);
-    res.json({ settings: await catalogSvc.getCatalogSettings(comercioId) });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.put("/catalog/settings", async (req, res) => {
-  try {
-    const comercioId = await catalogComercioId(req);
-    const body = z
-      .object({
-        whatsappPhone: z.string().optional(),
-        orderTtlHours: z.union([z.number(), z.string()]).optional(),
-        publicEnabled: z.boolean().optional(),
-      })
-      .parse(req.body ?? {});
-    const settings = await catalogSvc.saveCatalogSettings(comercioId, body);
-    res.json({ ok: true, settings });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.get("/catalog/orders", async (req, res) => {
-  try {
-    const comercioId = await catalogComercioId(req);
-    res.json({ orders: await catalogSvc.listCatalogOrders(comercioId) });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-apiRouter.patch("/catalog/orders/:id", async (req, res) => {
-  try {
-    const comercioId = await catalogComercioId(req);
-    const body = z.object({ status: z.string() }).parse(req.body ?? {});
-    const order = await catalogSvc.updateCatalogOrderStatus(
-      comercioId,
-      req.params.id,
-      body.status
-    );
-    res.json({ order });
   } catch (err) {
     sendError(res, err);
   }

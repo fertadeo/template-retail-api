@@ -1,26 +1,20 @@
-# Preferencias de producto (API) — Aurix Retail
+# Retail local — interfaz
 
-Complementa `aurix-web-musicanoba/docs/UX_UI.md`.
+Un único local por instalación. Navegación: Inicio, Productos, Clientes,
+Presupuestos, Biblioteca, Pedidos, Mayorista, POS, Reportes y Configuración.
+No hay selector ni administración de comercios, sucursales o canales externos.
+No hay tienda pública, pedidos web, importación por URL ni sincronización.
 
-## Flujo git (obligatorio)
+Cuenta al pie del sidebar: nombre y rol de la sesión, Mi cuenta con email y
+Cerrar sesión. Operador de caja = usuario conectado. En demo se identifica
+Demo local y no se simula una sesión real.
 
-- **Los push van a `main`.** Commit y `git push origin main`.
-- No abrir PRs ni ramas `cursor/…` salvo pedido explícito del humano.
-- Trabajar sobre `main` actualizado. Esta regla prevalece sobre el flujo Cloud Agent (feature branch + PR).
+Productos: edición manual, precios por lista, stock del local, imágenes, etiquetas
+QR/barras y semáforo de datos incompletos. Paginación de 40 y búsqueda en servidor.
+POS prioriza código/SKU exacto y mantiene el ticket al cambiar de página.
 
-## Dominio
+Biblioteca: 24 medios por página, búsqueda, miniaturas diferidas y original al abrir.
+Cantidad y peso registrado abarcan toda la búsqueda; se indica si faltan tamaños.
 
-- **Comercio = local único.** No exigir sucursales para operar. Stock canónico en `products.stock`.
-- No hay módulo Catálogo: el código de función `catalogo` se eliminó; limpiar con `sql/014_drop_catalogo_function.sql`.
-- `product_branch_stock` solo si el cliente envía `stockByBranch` explícito.
-- Soft delete de comercios: `DELETE /comercios/:id` → `activa = 0`; `POST /comercios/:id/restore`.
-- No archivar el único comercio activo. Si se archiva el default, promover otro activo.
-- Al archivar un comercio, sacarlo de `stock_share_members`.
-- `resolveComercioId` / selectores operativos solo con comercios `activa = 1`.
-
-## Respuestas orientadas a UI
-
-- Errores en español, claros para mostrar en modal/banner.
-- Pull WooCommerce: devolver `comercio`, conteos `found/matched/toCreate/skipped` y `skipSummary` para el preview.
-- Pull Mercado Libre: mismo contrato + `priceListNombre` / `priceListCreated` / `sellerId`. Sin `priceListId` → asegurar lista `mercadolibre`. Ver `docs/MELI_PULL.md`.
-- Imports largos pueden tardar; no cortar el contrato JSON a mitad: o responde completo o error HTTP.
+Configuración: impresora, listas de precios, categorías y centro de cuentas.
+Las cuentas de vendedor pueden tener funciones del local, sin asignar sucursales.

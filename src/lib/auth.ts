@@ -81,10 +81,7 @@ export function logout(req: Request, res: Response) {
   res.json({ ok: true });
 }
 export async function requireSession(req: Request, res: Response, next: NextFunction) {
-  const publicRoute = req.path === "/health" || req.path === "/auth/login" || req.path === "/auth/logout"
-    || req.path === "/catalog/public" || req.path.startsWith("/catalog/public/")
-    || (req.method === "POST" && req.path === "/channels/mercadolibre/notifications")
-    || (req.method === "GET" && req.path === "/channels/mercadolibre/notifications/callback");
+  const publicRoute = req.path === "/health" || req.path === "/auth/login" || req.path === "/auth/logout";
   if (publicRoute) { next(); return; }
   try {
     res.setHeader("Cache-Control", "no-store");

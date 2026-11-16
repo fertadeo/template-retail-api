@@ -65,9 +65,9 @@ function mapOrder(row: OrderRow, lines: OrderLine[]): Order {
   return {
     id: row.id,
     comercioId: row.comercio_id,
-    branchId: row.branch_id,
+    branchId: null,
     vendedorId: row.vendedor_id,
-    branchNombre: row.branch_nombre ?? null,
+    branchNombre: null,
     vendedorNombre: row.vendedor_nombre ?? null,
     folio: row.folio,
     clientId: row.client_id,
@@ -87,10 +87,9 @@ function mapOrder(row: OrderRow, lines: OrderLine[]): Order {
 
 const ORDER_SELECT = `
   SELECT o.*,
-         b.nombre AS branch_nombre,
+         NULL AS branch_nombre,
          u.nombre AS vendedor_nombre
   FROM orders o
-  LEFT JOIN branches b ON b.id = o.branch_id
   LEFT JOIN users u ON u.id = o.vendedor_id
 `;
 
@@ -161,7 +160,7 @@ async function insertOrder(
     [
       order.id,
       order.comercioId ?? null,
-      order.branchId ?? null,
+      null,
       order.vendedorId ?? null,
       order.folio,
       order.clientId,
@@ -197,7 +196,7 @@ async function insertOrder(
 }
 
 async function applyDeductions(items: PendingDeduction[]): Promise<void> {
-  const { deductStock: deduct } = await import("./comercios.js");
+  const { deductStock: deduct } = await import("./local-stock.js");
   for (const item of items) {
     await deduct(item.productId, item.qty);
   }
@@ -286,7 +285,7 @@ export async function createPedido(input: {
     const draft: Order = {
       id,
       comercioId,
-      branchId: input.branchId ?? null,
+      branchId: null,
       vendedorId: input.vendedorId ?? null,
       folio,
       clientId: client.id,
@@ -349,7 +348,7 @@ export async function createMayoristaPedido(input: {
     const draft: Order = {
       id,
       comercioId,
-      branchId: input.branchId ?? null,
+      branchId: null,
       vendedorId: input.vendedorId ?? null,
       folio,
       clientId: client.id,
@@ -459,7 +458,7 @@ export async function createPosSale(input: {
     const draft: Order = {
       id,
       comercioId,
-      branchId: input.branchId ?? null,
+      branchId: null,
       vendedorId: input.vendedorId ?? null,
       folio,
       clientId: client?.id ?? null,

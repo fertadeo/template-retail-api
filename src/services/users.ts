@@ -55,14 +55,6 @@ function mapUser(
   };
 }
 
-async function loadBranchIds(userId: string): Promise<string[]> {
-  const rows = await query<(RowDataPacket & { branch_id: string })[]>(
-    `SELECT branch_id FROM user_branches WHERE user_id = ? ORDER BY branch_id`,
-    [userId]
-  );
-  return rows.map((r) => r.branch_id);
-}
-
 async function loadFunctions(userId: string): Promise<AppFunctionCode[]> {
   const rows = await query<(RowDataPacket & { function_code: string })[]>(
     `SELECT function_code FROM user_functions WHERE user_id = ? ORDER BY function_code`,
@@ -74,11 +66,7 @@ async function loadFunctions(userId: string): Promise<AppFunctionCode[]> {
 }
 
 async function hydrate(row: UserRow): Promise<User> {
-  const [branchIds, functions] = await Promise.all([
-    loadBranchIds(row.id),
-    loadFunctions(row.id),
-  ]);
-  return mapUser(row, branchIds, functions);
+  return mapUser(row, [], await loadFunctions(row.id));
 }
 
 export async function listUsers(onlyActive = false): Promise<User[]> {
@@ -131,7 +119,7 @@ function scopeForRole(
     return { branchIds: [], functions: [] };
   }
   return {
-    branchIds: [...new Set((branchIds ?? []).map((b) => b.trim()).filter(Boolean))],
+    branchIds: [],
     functions: normalizeFunctions(functions),
   };
 }
@@ -179,20 +167,6 @@ export async function upsertUser(input: {
   }
 
   await withTransaction(async (conn) => {
-    if (scope.branchIds.length) {
-      const ph = scope.branchIds.map(() => "?").join(",");
-      const [found] = await conn.execute<RowDataPacket[]>(
-        `SELECT id FROM branches WHERE id IN (${ph}) AND activa = 1`,
-        scope.branchIds
-      );
-      if (found.length !== scope.branchIds.length) {
-        throw new HttpError(
-          400,
-          "Una o más sucursales no existen o están inactivas."
-        );
-      }
-    }
-
     if (input.id) {
       const sets = [
         "email = ?",
@@ -233,15 +207,8 @@ export async function upsertUser(input: {
       );
     }
 
-    await conn.execute(`DELETE FROM user_branches WHERE user_id = ?`, [id]);
     await conn.execute(`DELETE FROM user_functions WHERE user_id = ?`, [id]);
 
-    for (const branchId of scope.branchIds) {
-      await conn.execute(
-        `INSERT INTO user_branches (user_id, branch_id) VALUES (?, ?)`,
-        [id, branchId]
-      );
-    }
     for (const code of scope.functions) {
       await conn.execute(
         `INSERT INTO user_functions (user_id, function_code) VALUES (?, ?)`,
