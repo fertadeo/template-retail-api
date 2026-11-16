@@ -4,6 +4,7 @@ import mysql, {
   type ResultSetHeader,
   type RowDataPacket,
 } from "mysql2/promise";
+import { recordReadTiming } from "../lib/request-timing.js";
 import { env } from "../config/env.js";
 
 let pool: Pool | null = null;
@@ -57,8 +58,16 @@ export async function query<T extends RowDataPacket[]>(
   sql: string,
   params: SqlParam[] = []
 ): Promise<T> {
-  const [rows] = await getPool().execute<T>(sql, params);
-  return rows;
+  const started = performance.now();
+  const conn = await getPool().getConnection();
+  const acquired = performance.now();
+  try {
+    const [rows] = await conn.execute<T>(sql, params);
+    return rows;
+  } finally {
+    recordReadTiming(acquired - started, performance.now() - acquired);
+    conn.release();
+  }
 }
 
 export async function execute(

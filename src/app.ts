@@ -3,6 +3,7 @@ import express from "express";
 import { ZodError } from "zod";
 import { env } from "./config/env.js";
 import { HttpError } from "./lib/http.js";
+import { catalogTiming } from "./lib/request-timing.js";
 import { apiRouter } from "./routes/index.js";
 
 export function createApp() {
@@ -24,6 +25,7 @@ export function createApp() {
     });
   });
 
+  app.use(catalogTiming);
   app.use("/api", apiRouter);
 
   app.use((_req, res) => {
