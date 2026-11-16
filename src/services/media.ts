@@ -1,3 +1,5 @@
+import sharp from "sharp";
+import { createHash } from "node:crypto";
 import type { RowDataPacket } from "mysql2/promise";
 import { execute, query } from "../db/pool.js";
 import { HttpError } from "../lib/http.js";
@@ -16,6 +18,7 @@ export type MediaAsset = {
   mime: string;
   sizeBytes: number;
   dataUrl: string | null;
+  thumbnailUrl?: string | null;
   uploadedAt: string;
   title: string;
   subtitle: string;
@@ -30,6 +33,8 @@ export type MediaLibraryCounts = {
   images: number;
   attachments: number;
   total: number;
+  totalSizeBytes: number;
+  unknownSizeCount: number;
 };
 
 type MediaRow = RowDataPacket & {
@@ -174,56 +179,107 @@ async function nextSortOrder(productId: string): Promise<number> {
   return Number(rows[0]?.next_ord) || 0;
 }
 
-export async function listMedia(opts?: {
-  comercioId?: string;
-  kind?: MediaKind | "all";
-  q?: string;
-  productId?: string;
-}): Promise<{ items: MediaAsset[]; counts: MediaLibraryCounts }> {
-  const comercioId =
-    opts?.comercioId || (await getDefaultComercioId());
-  const params: (string | number | null)[] = [comercioId];
-  let productFilter = "";
-  if (opts?.productId) {
-    productFilter = " AND m.product_id = ?";
-    params.push(opts.productId);
-  }
-  const rows = await query<MediaRow[]>(
-    `SELECT m.*, p.nombre AS product_nombre, p.sku AS product_sku
-     FROM media_assets m
-     LEFT JOIN products p ON p.id = m.product_id
-     WHERE (m.comercio_id = ? OR m.comercio_id IS NULL)${productFilter}
-     ORDER BY
-       CASE WHEN m.product_id IS NULL THEN 1 ELSE 0 END,
-       m.is_primary DESC,
-       m.sort_order ASC,
-       m.uploaded_at DESC,
-       m.filename ASC`,
-    params
-  );
+const MEDIA_COLUMNS = `m.id, m.comercio_id, m.product_id, m.is_primary, m.sort_order,
+  m.kind, m.filename, m.mime, m.size_bytes, m.title, m.uploaded_at,
+  m.source_url, NULL AS data_url`;
 
-  let items = rows.map(mapRow);
-  const counts: MediaLibraryCounts = {
-    images: items.filter((i) => i.kind === "image").length,
-    attachments: items.filter((i) => i.kind === "attachment").length,
-    total: items.length,
+function mediaUrl(id: string, thumbnail = false): string {
+  return `/api/media/${encodeURIComponent(id)}/content${thumbnail ? "?thumbnail=1" : ""}`;
+}
+
+function mapListedMedia(row: MediaRow): MediaAsset {
+  const item = mapRow(row);
+  return {
+    ...item,
+    dataUrl: row.source_url || mediaUrl(row.id),
+    thumbnailUrl: row.kind === "image" ? row.source_url || mediaUrl(row.id, true) : null,
   };
+}
 
-  const kind = opts?.kind ?? "all";
-  if (kind !== "all") {
-    items = items.filter((i) => i.kind === kind);
+/** Metadata only: never select LONGTEXT data_url for a library listing. */
+export async function listMediaPage(opts: {
+  comercioId: string; kind: MediaKind | "all"; q: string;
+  productId?: string; page: number; pageSize: number;
+}) {
+  const where = ["(m.comercio_id = ? OR m.comercio_id IS NULL)"];
+  const params: (string | number)[] = [opts.comercioId];
+  if (opts.productId) { where.push("m.product_id = ?"); params.push(opts.productId); }
+  if (opts.q) {
+    const term = `%${opts.q.replace(/[!%_]/g, "!$&")}%`;
+    where.push("(m.filename LIKE ? ESCAPE '!' OR m.title LIKE ? ESCAPE '!' OR p.nombre LIKE ? ESCAPE '!' OR p.sku LIKE ? ESCAPE '!')");
+    params.push(term, term, term, term);
   }
-  const q = (opts?.q ?? "").trim().toLowerCase();
-  if (q) {
-    items = items.filter((i) =>
-      [i.filename, i.title, i.subtitle, i.sourceLabel, i.mime]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    );
+  const from = `FROM media_assets m LEFT JOIN products p ON p.id = m.product_id`;
+  const baseWhere = where.join(" AND ");
+  const countParams = [...params];
+  if (opts.kind !== "all") { where.push("m.kind = ?"); params.push(opts.kind); }
+  const [rows, groups] = await Promise.all([
+    query<MediaRow[]>(`SELECT ${MEDIA_COLUMNS}, p.nombre AS product_nombre, p.sku AS product_sku
+      ${from} WHERE ${where.join(" AND ")}
+      ORDER BY m.uploaded_at DESC, m.id DESC
+      LIMIT ${opts.pageSize + 1} OFFSET ${(opts.page - 1) * opts.pageSize}`, params),
+    query<(RowDataPacket & { kind: MediaKind; count: number; bytes: string | number; unknown_size: string | number })[]>(
+      `SELECT m.kind, COUNT(*) AS count,
+        COALESCE(SUM(GREATEST(COALESCE(m.size_bytes, 0), 0)), 0) AS bytes,
+        SUM(CASE WHEN COALESCE(m.size_bytes, 0) <= 0 THEN 1 ELSE 0 END) AS unknown_size ${from} WHERE ${baseWhere} GROUP BY m.kind`, countParams),
+  ]);
+  const counts: MediaLibraryCounts = { images: 0, attachments: 0, total: 0, totalSizeBytes: 0, unknownSizeCount: 0 };
+  for (const group of groups) {
+    const count = Number(group.count);
+    if (group.kind === "image") counts.images = count; else counts.attachments = count;
+    counts.total += count;
+    counts.totalSizeBytes += Number(group.bytes) || 0;
+    counts.unknownSizeCount += Number(group.unknown_size) || 0;
   }
+  return { items: rows.slice(0, opts.pageSize).map(mapListedMedia), counts,
+    page: opts.page, pageSize: opts.pageSize, hasMore: rows.length > opts.pageSize };
+}
 
-  return { items, counts };
+/** Fetch one result after mutations instead of re-reading the library. */
+async function getListedMedia(id: string): Promise<MediaAsset> {
+  const rows = await query<MediaRow[]>(`SELECT ${MEDIA_COLUMNS}, p.nombre AS product_nombre, p.sku AS product_sku
+    FROM media_assets m LEFT JOIN products p ON p.id = m.product_id WHERE m.id = ? LIMIT 1`, [id]);
+  if (!rows[0]) throw new HttpError(404, "Medio no encontrado.");
+  return mapListedMedia(rows[0]);
+}
+
+// Bounded thumbnail cache, keyed by source content so updates cannot serve old images.
+const thumbnails = new Map<string, Buffer>();
+let thumbnailBytes = 0;
+const THUMBNAIL_BUDGET = 32 * 1024 * 1024;
+export async function getMediaContent(id: string, thumbnail: boolean): Promise<
+  { redirect: string } | { body: Buffer; mime: string; filename: string }
+> {
+  const rows = await query<MediaRow[]>(`SELECT mime, filename, data_url, source_url FROM media_assets WHERE id = ? LIMIT 1`, [id]);
+  const row = rows[0];
+  if (!row) throw new HttpError(404, "Medio no encontrado.");
+  if (row.source_url && !row.data_url) return { redirect: row.source_url };
+  const match = /^data:([^;,]*)(;base64)?,([\s\S]*)$/.exec(row.data_url ?? "");
+  if (!match) throw new HttpError(404, "Archivo no disponible.");
+  let body: Buffer;
+  try { body = match[2] ? Buffer.from(match[3], "base64") : Buffer.from(decodeURIComponent(match[3])); }
+  catch { throw new HttpError(400, "Archivo inválido."); }
+  let mime = row.mime;
+  if (thumbnail && mime.startsWith("image/") && mime !== "image/svg+xml") {
+    const key = createHash("sha256").update(body).digest("hex");
+    let cached = thumbnails.get(key);
+    if (!cached) {
+      try {
+        cached = await sharp(body, { limitInputPixels: 40_000_000 })
+          .rotate().resize(480, 360, { fit: "inside", withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
+      } catch { cached = undefined; } // Unsupported images retain their original representation.
+      if (cached && cached.length <= THUMBNAIL_BUDGET) {
+        while (thumbnailBytes + cached.length > THUMBNAIL_BUDGET && thumbnails.size) {
+          const oldest = thumbnails.keys().next().value!;
+          thumbnailBytes -= thumbnails.get(oldest)!.length;
+          thumbnails.delete(oldest);
+        }
+        thumbnails.set(key, cached); thumbnailBytes += cached.length;
+      }
+    }
+    if (cached) { body = cached; mime = "image/webp"; }
+  }
+  return { body, mime, filename: row.filename };
 }
 
 export async function listProductImages(
@@ -254,10 +310,7 @@ export async function loadImagesForProducts(
        m.id, m.comercio_id, m.product_id, m.is_primary, m.sort_order,
        m.kind, m.filename, m.mime, m.size_bytes, m.title, m.uploaded_at,
        m.source_url,
-       CASE
-         WHEN m.source_url IS NOT NULL AND TRIM(m.source_url) <> '' THEN NULL
-         ELSE m.data_url
-       END AS data_url,
+       ${opts?.primaryOnly ? "NULL" : "CASE WHEN m.source_url IS NOT NULL AND TRIM(m.source_url) <> '' THEN NULL ELSE m.data_url END"} AS data_url,
        NULL AS product_nombre,
        NULL AS product_sku
      FROM media_assets m
@@ -269,7 +322,10 @@ export async function loadImagesForProducts(
   for (const row of rows) {
     if (!row.product_id) continue;
     const bag = map.get(row.product_id) ?? [];
-    bag.push(toProductImage(row));
+    bag.push(opts?.primaryOnly ? {
+      ...toProductImage(row), url: row.source_url || mediaUrl(row.id, true),
+      dataUrl: null,
+    } : toProductImage(row));
     map.set(row.product_id, bag);
   }
   return map;
@@ -371,14 +427,7 @@ export async function createMedia(input: {
     ]
   );
 
-  const listed = await listMedia({
-    comercioId,
-    kind: "all",
-    productId: productId ?? undefined,
-  });
-  const created = listed.items.find((i) => i.id === id);
-  if (!created) throw new HttpError(500, "No se pudo crear el medio.");
-  return created;
+  return getListedMedia(id);
 }
 
 export async function updateMedia(
@@ -391,7 +440,7 @@ export async function updateMedia(
   }
 ): Promise<MediaAsset> {
   const rows = await query<MediaRow[]>(
-    `SELECT m.*, p.nombre AS product_nombre, p.sku AS product_sku
+    `SELECT ${MEDIA_COLUMNS}, p.nombre AS product_nombre, p.sku AS product_sku
      FROM media_assets m
      LEFT JOIN products p ON p.id = m.product_id
      WHERE m.id = ?
@@ -448,13 +497,7 @@ export async function updateMedia(
     await ensurePrimary(productId);
   }
 
-  const listed = await listMedia({
-    comercioId: current.comercio_id ?? undefined,
-    productId: productId ?? undefined,
-  });
-  const updated = listed.items.find((i) => i.id === id);
-  if (!updated) throw new HttpError(500, "No se pudo actualizar el medio.");
-  return updated;
+  return getListedMedia(id);
 }
 
 export async function setProductImagePrimary(

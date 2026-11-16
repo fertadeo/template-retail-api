@@ -2,7 +2,7 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { query, withTransaction } from "../db/pool.js";
 import { HttpError } from "../lib/http.js";
 import { nextId } from "../lib/ids.js";
-import type { Product, ProductCategory } from "../types.js";
+import type { Product, ProductCategory, ProductImage } from "../types.js";
 import {
   getProductsStockByBranch,
   setProductBranchStock,
@@ -211,6 +211,103 @@ export async function listProducts(comercioId?: string): Promise<Product[]> {
     mapProduct(r, precios.get(r.id) ?? {}, sold.get(r.id) ?? 0)
   );
   return withCategoryNames(await decorate(base, { images: "primary" }));
+}
+
+export type ProductPageOptions = {
+  page: number; pageSize: number; q: string; category: string;
+  health: "all" | "ready" | "attention" | "critical";
+  sort: "nombre" | "recent" | "oldest" | "sold_desc" | "sold_asc";
+  pos: boolean;
+};
+
+// Health metadata is intentionally independent of the product page request.
+const healthSql = `CASE WHEN (
+  TRIM(p.sku) = '' OR TRIM(p.nombre) = '' OR p.precio_default <= 0 OR NOT EXISTS (
+    SELECT 1 FROM media_assets m WHERE m.product_id = p.id AND m.kind = 'image' AND m.is_primary = 1
+    AND (COALESCE(m.source_url, '') <> '' OR OCTET_LENGTH(m.data_url) > 0)
+  )) THEN 'critical' WHEN (TRIM(p.descripcion) = '' OR p.stock <= 0 OR p.activo = 0)
+  THEN 'attention' ELSE 'ready' END`;
+
+export async function productHealthCounts(cid: string, q: string, category: string) {
+  const where = ["p.comercio_id = ?"];
+  const params = [cid];
+  if (category) { where.push("p.categoria = ?"); params.push(category); }
+  if (q) {
+    const term = `%${q.replace(/[!%_]/g, "!$&")}%`;
+    where.push("(p.sku LIKE ? ESCAPE '!' OR p.nombre LIKE ? ESCAPE '!')"); params.push(term, term);
+  }
+  const rows = await query<(RowDataPacket & { level: "ready" | "attention" | "critical"; count: number })[]>(
+    `SELECT ${healthSql} AS level, COUNT(*) AS count FROM products p WHERE ${where.join(" AND ")} GROUP BY level`, params
+  );
+  const counts = { all: 0, ready: 0, attention: 0, critical: 0 };
+  for (const row of rows) { counts[row.level] = Number(row.count); counts.all += Number(row.count); }
+  return counts;
+}
+
+/** Filter and limit before loading prices, images and channel links. */
+export async function listProductsPage(cid: string, opts: ProductPageOptions) {
+  const where = ["p.comercio_id = ?"];
+  const params: (string | number)[] = [cid];
+  if (opts.pos) where.push("p.activo = 1", "p.stock > 0");
+  if (opts.category) { where.push("p.categoria = ?"); params.push(opts.category); }
+  if (opts.q) {
+    // Scanners / pasted codes take the indexed equality path first.
+    const exact = opts.pos ? await query<ProdRow[]>(
+      `SELECT p.* FROM products p WHERE ${where.join(" AND ")} AND p.sku = ? LIMIT 1`,
+      [...params, opts.q]
+    ) : [];
+    if (exact.length) {
+      const prices = opts.page === 1 ? await loadPrecios([exact[0].id]) : new Map<string, Record<string, number>>();
+      return {
+        items: opts.page === 1 ? [mapProduct(exact[0], prices.get(exact[0].id) ?? {})] : [],
+        page: opts.page, pageSize: opts.pageSize, hasMore: false,
+        counts: { all: 0, ready: 0, attention: 0, critical: 0 },
+      };
+    } else {
+      const term = opts.q.replace(/[!%_]/g, "!$&");
+      where.push("(p.sku LIKE ? ESCAPE '!' OR p.nombre LIKE ? ESCAPE '!')");
+      params.push(`%${term}%`, `%${term}%`);
+    }
+  }
+  if (!opts.pos && opts.health !== "all") {
+    where.push(`(${healthSql}) = ?`); params.push(opts.health);
+  }
+  const soldSort = opts.sort === "sold_desc" || opts.sort === "sold_asc";
+  const soldJoin = soldSort ? `LEFT JOIN (
+    SELECT ol.product_id, SUM(ol.cantidad) AS units FROM order_lines ol
+    INNER JOIN orders o ON o.id = ol.order_id
+    WHERE o.comercio_id = ? AND o.status NOT IN ('cancelado', 'borrador')
+    GROUP BY ol.product_id
+  ) sales ON sales.product_id = p.id` : "";
+  const orders = {
+    nombre: "p.nombre ASC", recent: "p.created_at DESC", oldest: "p.created_at ASC",
+    sold_desc: "COALESCE(sales.units, 0) DESC", sold_asc: "COALESCE(sales.units, 0) ASC",
+  };
+  const offset = (opts.page - 1) * opts.pageSize;
+  const rows = await query<ProdRow[]>(
+    `SELECT p.* FROM products p ${soldJoin} WHERE ${where.join(" AND ")}
+     ORDER BY ${orders[opts.sort]}, p.id ASC LIMIT ${opts.pageSize + 1} OFFSET ${offset}`,
+    soldSort ? [cid, ...params] : params
+  );
+  const hasMore = rows.length > opts.pageSize;
+  const selected = rows.slice(0, opts.pageSize);
+  const ids = selected.map(r => r.id);
+  const base = selected.map(r => mapProduct(r, {}));
+  const [prices, sold, images, linked, named] = await Promise.all([
+    loadPrecios(ids),
+    opts.pos ? Promise.resolve(new Map<string, number>()) : loadUnitsSold(ids, cid),
+    opts.pos ? Promise.resolve(new Map<string, ProductImage[]>()) : loadImagesForProducts(ids, { primaryOnly: true }),
+    opts.pos ? Promise.resolve(base) : enrichProductsWithLinks(base),
+    opts.pos ? Promise.resolve(base) : withCategoryNames(base),
+  ]);
+  const items = base.map((p, index) => ({
+    ...p, precios: prices.get(p.id) ?? {}, unitsSold: sold.get(p.id) ?? 0,
+    categoriaNombre: named[index].categoriaNombre,
+    channelLinks: linked[index].channelLinks,
+    imagenPrincipal: splitProductImages(images.get(p.id) ?? []).imagenPrincipal,
+  }));
+  return { items, page: opts.page, pageSize: opts.pageSize, hasMore };
+
 }
 
 export async function getProduct(id: string): Promise<Product | null> {

@@ -1,3 +1,4 @@
+import { login, logout, requireSession } from "../lib/auth.js";
 import { Router } from "express";
 import { z } from "zod";
 import { readComercioId } from "../lib/comercio-req.js";
@@ -22,6 +23,12 @@ import * as categoriesSvc from "../services/categories.js";
 import { testConnection } from "../db/pool.js";
 
 export const apiRouter = Router();
+apiRouter.use(requireSession);
+apiRouter.post("/auth/login", login);
+apiRouter.post("/auth/logout", logout);
+apiRouter.get("/auth/session", (_req, res) => {
+  res.json({ user: res.locals.user });
+});
 
 apiRouter.get("/health", async (_req, res) => {
   const db = await testConnection();
@@ -168,10 +175,37 @@ apiRouter.patch("/categories/:id", async (req, res) => {
 });
 
 /* —— Products —— */
+apiRouter.get("/products/counts", async (req, res) => {
+  try {
+    const started = performance.now();
+    const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
+    const { q, category } = z.object({ q: z.string().trim().max(200).default(""), category: z.string().max(100).default("") }).parse(req.query);
+    const counts = await productsSvc.productHealthCounts(comercioId, q, category);
+    res.setHeader("Server-Timing", `counts;dur=${(performance.now() - started).toFixed(1)}`);
+    res.json(counts);
+  } catch (err) { sendError(res, err); }
+});
+
 apiRouter.get("/products", async (req, res) => {
   try {
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
-    res.json(await productsSvc.listProducts(comercioId));
+    if (req.query.page !== undefined) {
+      const opts = z.object({
+        page: z.coerce.number().int().min(1).max(100000).default(1),
+        pageSize: z.coerce.number().int().min(1).max(100).default(40),
+        q: z.string().trim().max(200).default(""),
+        category: z.string().max(100).default(""),
+        health: z.enum(["all", "ready", "attention", "critical"]).default("all"),
+        sort: z.enum(["nombre", "recent", "oldest", "sold_desc", "sold_asc"]).default("nombre"),
+        pos: z.enum(["true", "false"]).default("false").transform(v => v === "true"),
+      }).parse(req.query);
+      const started = performance.now();
+      const result = await productsSvc.listProductsPage(comercioId, opts);
+      res.setHeader("Server-Timing", `products;dur=${(performance.now() - started).toFixed(1)}`);
+      res.json(result);
+    } else {
+      res.json(await productsSvc.listProducts(comercioId));
+    }
   } catch (err) {
     sendError(res, err);
   }
@@ -1275,10 +1309,31 @@ apiRouter.get("/media", async (req, res) => {
     const q = typeof req.query.q === "string" ? req.query.q : "";
     const productId =
       typeof req.query.productId === "string" ? req.query.productId : undefined;
-    res.json(await mediaSvc.listMedia({ comercioId, kind, q, productId }));
+    const started = performance.now();
+    const { page, pageSize } = z.object({
+      page: z.coerce.number().int().min(1).max(100000).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(24),
+    }).parse(req.query);
+    const result = await mediaSvc.listMediaPage({ comercioId, kind, q: q.trim().slice(0, 200), productId, page, pageSize });
+    res.setHeader("Server-Timing", `media;dur=${(performance.now() - started).toFixed(1)}`);
+    res.json(result);
   } catch (err) {
     sendError(res, err);
   }
+});
+
+apiRouter.get("/media/:id/content", async (req, res) => {
+  try {
+    const media = await mediaSvc.getMediaContent(req.params.id, req.query.thumbnail === "1");
+    if ("redirect" in media) { res.redirect(media.redirect); return; }
+    res.setHeader("Content-Type", media.mime);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+    // Private HTTP cache stores each file separately; listing responses remain no-store.
+    res.setHeader("Cache-Control", "private, max-age=300");
+    if (!media.mime.startsWith("image/") && media.mime !== "application/pdf") res.attachment(media.filename);
+    res.send(media.body);
+  } catch (err) { sendError(res, err); }
 });
 
 const mediaBody = z.object({
