@@ -9,7 +9,7 @@ export function recordReadTiming(waitMs: number, sqlMs: number) {
 
 /** Observe catalog reads without logging queries, credentials or product data. */
 export function catalogTiming(req: Request, res: Response, next: NextFunction) {
-  if (req.method !== "GET" || !/^\/api\/(products|media)(\/|$)/.test(req.path)) { next(); return; }
+  if (req.method !== "GET" || !/^\/api\/(products|media|catalog)(\/|$)/.test(req.path)) { next(); return; }
   const started = performance.now();
   const values = { queries: 0, sqlMs: 0, waitMs: 0 };
   timings.run(values, () => {

@@ -247,10 +247,22 @@ async function getListedMedia(id: string): Promise<MediaAsset> {
 const thumbnails = new Map<string, Buffer>();
 let thumbnailBytes = 0;
 const THUMBNAIL_BUDGET = 32 * 1024 * 1024;
-export async function getMediaContent(id: string, thumbnail: boolean): Promise<
+export async function getMediaContent(id: string, thumbnail: boolean, options?: { publicComercioId?: string }): Promise<
   { redirect: string } | { body: Buffer; mime: string; filename: string }
 > {
-  const rows = await query<MediaRow[]>(`SELECT mime, filename, data_url, source_url FROM media_assets WHERE id = ? LIMIT 1`, [id]);
+  const rows = options?.publicComercioId
+    ? await query<MediaRow[]>(`SELECT m.mime, m.filename, m.data_url, m.source_url FROM media_assets m
+        INNER JOIN products p ON p.id = m.product_id
+        LEFT JOIN categories c ON c.comercio_id = p.comercio_id AND c.codigo = p.categoria
+        LEFT JOIN product_prices pp ON pp.product_id = p.id AND pp.price_list_id = (
+          SELECT l.id FROM price_lists l WHERE l.comercio_id = p.comercio_id AND l.activa = 1
+          ORDER BY l.es_default DESC, l.nombre ASC, l.id ASC LIMIT 1
+        )
+        WHERE m.id = ? AND p.comercio_id = ? AND p.activo = 1 AND p.stock > 0
+          AND (c.id IS NULL OR c.activa = 1) AND COALESCE(pp.precio, p.precio_default) > 0
+          AND EXISTS (SELECT 1 FROM price_lists l WHERE l.comercio_id = p.comercio_id AND l.activa = 1)
+          AND m.kind = 'image' AND m.mime LIKE 'image/%' LIMIT 1`, [id, options.publicComercioId])
+    : await query<MediaRow[]>(`SELECT mime, filename, data_url, source_url FROM media_assets WHERE id = ? LIMIT 1`, [id]);
   const row = rows[0];
   if (!row) throw new HttpError(404, "Medio no encontrado.");
   if (row.source_url && !row.data_url) return { redirect: row.source_url };
