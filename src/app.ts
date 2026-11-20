@@ -8,6 +8,7 @@ import { apiRouter } from "./routes/index.js";
 
 export function createApp() {
   const app = express();
+  app.set("trust proxy", "loopback");
 
   app.use(
     cors({

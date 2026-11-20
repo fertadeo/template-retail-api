@@ -1,3 +1,4 @@
+import { publicCatalogRouter, privateCatalogRouter } from "./catalog.js";
 import { login, logout, requireSession } from "../lib/auth.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -17,7 +18,9 @@ import * as categoriesSvc from "../services/categories.js";
 import { testConnection } from "../db/pool.js";
 
 export const apiRouter = Router();
+apiRouter.use("/catalog/public", publicCatalogRouter);
 apiRouter.use(requireSession);
+apiRouter.use("/catalog", privateCatalogRouter);
 apiRouter.post("/auth/login", login);
 apiRouter.post("/auth/logout", logout);
 apiRouter.get("/auth/session", (_req, res) => {
