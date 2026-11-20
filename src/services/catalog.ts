@@ -54,9 +54,11 @@ export type CartIssue = {
 };
 export type CatalogOrderStatus =
   | "pendiente"
-  | "confirmado"
+  | "en_preparacion"
+  | "listo_para_entrega"
+  | "entregado"
+  | "devolucion"
   | "cancelado"
-  | "vencido"
   | "cobrado";
 export type CatalogOrder = {
   id: string;
@@ -297,7 +299,8 @@ export async function publicProducts(options: {
   const rows = await query<ProductRow[]>(
     `SELECT p.id, p.nombre, p.sku, p.categoria,
     COALESCE(c.nombre, p.categoria) AS category_name, '' AS descripcion, p.stock, ${PRICE} AS price
-    ${FROM} WHERE ${where.join(" AND ")} ORDER BY ${order}, p.id ASC
+    ${FROM} WHERE ${where.join(" AND ")} ORDER BY EXISTS (SELECT 1 FROM media_assets cover WHERE cover.product_id = p.id
+      AND cover.kind = 'image' AND cover.mime LIKE 'image/%') DESC, ${order}, p.id ASC
     LIMIT ${options.pageSize + 1} OFFSET ${(options.page - 1) * options.pageSize}`,
     params,
   );
@@ -429,10 +432,15 @@ const ORDER_FIELDS = `id, status, buyer_name, buyer_phone, buyer_note, items_jso
   checkout_key, request_hash, payment_status, payment_method, payment_reference,
   DATE_FORMAT(expires_at, '%Y-%m-%dT%H:%i:%s.000Z') AS expires_iso,
   DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.000Z') AS created_iso`;
+function normalizedStatus(status: string): CatalogOrderStatus {
+  if (status === "confirmado") return "en_preparacion";
+  if (status === "vencido") return "pendiente";
+  return status as CatalogOrderStatus;
+}
 function mapOrder(row: OrderRow): CatalogOrder {
   return {
     id: row.id,
-    status: row.status,
+    status: normalizedStatus(row.status),
     expiresAt: row.expires_iso,
     buyerName: row.buyer_name,
     buyerPhone: row.buyer_phone,
@@ -565,7 +573,7 @@ export async function listCatalogOrders(
   options: { page: number; pageSize: number; status?: string; q?: string },
 ) {
   const effectiveStatus =
-    "CASE WHEN status = 'pendiente' AND expires_at <= UTC_TIMESTAMP() THEN 'vencido' ELSE status END";
+    "CASE WHEN status = 'confirmado' THEN 'en_preparacion' WHEN status = 'vencido' THEN 'pendiente' ELSE status END";
   const where = ["comercio_id = ?"];
   const params: string[] = [cid];
   if (options.status) {
@@ -595,11 +603,13 @@ export async function listCatalogOrders(
 export async function updateCatalogOrder(
   cid: string,
   id: string,
-  status: "pendiente" | "confirmado" | "cancelado",
+  status: Exclude<CatalogOrderStatus, "cobrado">,
 ) {
   const allowed: Record<string, string[]> = {
-    pendiente: ["confirmado", "cancelado"],
-    confirmado: ["cancelado"],
+    pendiente: ["en_preparacion", "cancelado"],
+    en_preparacion: ["listo_para_entrega", "cancelado"],
+    listo_para_entrega: ["en_preparacion", "entregado", "cancelado"],
+    entregado: ["devolucion"],
   };
   return withTransaction(async (conn) => {
     const [rows] = await conn.execute<OrderRow[]>(
@@ -608,11 +618,7 @@ export async function updateCatalogOrder(
     );
     const row = rows[0];
     if (!row) throw new HttpError(404, "Pedido no encontrado.");
-    if (
-      row.status === "pendiente" &&
-      new Date(row.expires_iso).getTime() <= Date.now()
-    )
-      throw new HttpError(409, "El pedido ya venció.");
+    row.status = normalizedStatus(row.status);
     if (status !== row.status && row.payment_status !== "not_requested")
       throw new HttpError(
         409,

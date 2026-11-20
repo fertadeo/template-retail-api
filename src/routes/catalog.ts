@@ -57,12 +57,10 @@ publicCatalogRouter.use((req, res, next) => {
   const limit = req.path === "/orders" ? 30 : 120;
   if (bucket.count >= limit || (!buckets.has(key) && buckets.size >= 10000)) {
     res.setHeader("Retry-After", "60");
-    res
-      .status(429)
-      .json({
-        error:
-          "Recibimos varios intentos seguidos. Esperá un minuto y volvé a intentar.",
-      });
+    res.status(429).json({
+      error:
+        "Recibimos varios intentos seguidos. Esperá un minuto y volvé a intentar.",
+    });
     return;
   }
   bucket.count++;
@@ -140,17 +138,15 @@ publicCatalogRouter.post("/orders", async (req, res) => {
     const result = await catalog.createPublicOrder(
       checkoutSchema.parse(req.body),
     );
-    res
-      .status(result.conflict ? 409 : 201)
-      .json(
-        result.conflict
-          ? {
-              error:
-                "Cambió el precio o la disponibilidad. Revisá el carrito antes de enviar.",
-              cart: result.cart,
-            }
-          : result,
-      );
+    res.status(result.conflict ? 409 : 201).json(
+      result.conflict
+        ? {
+            error:
+              "Cambió el precio o la disponibilidad. Revisá el carrito antes de enviar.",
+            cart: result.cart,
+          }
+        : result,
+    );
   } catch (err) {
     sendError(res, err);
   }
@@ -193,7 +189,15 @@ privateCatalogRouter.get("/orders", async (req, res) => {
         pageSize: z.coerce.number().int().min(1).max(100).default(20),
         q: z.string().trim().max(100).default(""),
         status: z
-          .enum(["pendiente", "confirmado", "cancelado", "vencido", "cobrado"])
+          .enum([
+            "pendiente",
+            "en_preparacion",
+            "listo_para_entrega",
+            "entregado",
+            "devolucion",
+            "cancelado",
+            "cobrado",
+          ])
           .optional(),
       })
       .parse(req.query);
@@ -209,7 +213,16 @@ privateCatalogRouter.patch("/orders/:id", async (req, res) => {
     if (res.locals.user.role === "visitante")
       throw new HttpError(403, "Esta cuenta solo puede consultar pedidos.");
     const { status } = z
-      .object({ status: z.enum(["pendiente", "confirmado", "cancelado"]) })
+      .object({
+        status: z.enum([
+          "pendiente",
+          "en_preparacion",
+          "listo_para_entrega",
+          "entregado",
+          "devolucion",
+          "cancelado",
+        ]),
+      })
       .parse(req.body);
     res.json({
       order: await catalog.updateCatalogOrder(
