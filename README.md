@@ -107,6 +107,14 @@ límites de tamaño y validaciones. Se confía únicamente en un reverse proxy
 loopback para obtener req.ip; el proxy debe preservar la cadena X-Forwarded-For.
 No se hacen fetches de URLs remotas desde el servidor para renderizar imágenes.
 
-Desplegar de manera coordinada con el frontend (`/tienda` y `/catalogo`). La API
+Desplegar de manera coordinada con el frontend (`/tienda`, Configuración y Pedidos). La API
 aplica 018 al boot, o con el procedimiento habitual de migraciones. No se ejecutó
 MySQL durante esta implementación. Las métricas Server-Timing incluyen el catálogo.
+
+Las listas públicas priorizan productos con imagen antes de paginar, conservando
+el orden elegido dentro de cada grupo. Los pedidos admiten pendiente → en_preparacion
+→ listo_para_entrega → entregado → devolucion; pueden cancelarse antes de entregarse.
+Listo para entrega también puede volver a preparación. El vencimiento del enlace
+de WhatsApp no cancela ni oculta solicitudes pendientes. Estados históricos
+confirmado/vencido se leen como en_preparacion/pendiente sin reescribir filas.
+No se requiere una nueva migración para estos estados (columna VARCHAR existente).

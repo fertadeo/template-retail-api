@@ -8,7 +8,6 @@ export const APP_FUNCTIONS = [
   { code: "pedidos", label: "Pedidos" },
   { code: "mayorista", label: "Mayorista" },
   { code: "pos", label: "POS" },
-  { code: "catalogo", label: "Catálogo público" },
   { code: "configuracion", label: "Configuración" },
 ] as const;
 

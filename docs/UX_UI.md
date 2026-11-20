@@ -1,7 +1,7 @@
 # Retail local — interfaz
 
 Un único local por instalación. Navegación: Inicio, Productos, Clientes,
-Presupuestos, Biblioteca, Pedidos, Mayorista, POS, Reportes, Catálogo público y Configuración.
+Presupuestos, Biblioteca, Pedidos, Mayorista, POS, Reportes y Configuración.
 No hay selector ni administración de comercios, sucursales o canales externos.
 El catálogo público del local permite preparar pedidos por WhatsApp. No hay importación por URL ni sincronización con plataformas externas.
 
@@ -34,8 +34,16 @@ con datos solicita confirmación y se bloquea mientras valida/guarda. La página
 explica que solo prepara el mensaje: abrir WhatsApp y tocar Enviar es necesario.
 Errores de conexión y cambios de precio/stock no vacían el carrito.
 
-`/catalogo` es privado: publicación, enlace para compartir y pedidos por estado.
+La publicación y el enlace para compartir están en Configuración; los pedidos de
+la tienda están en Pedidos → Tienda online. `/catalogo` solo redirige a Configuración.
+Los estados son Pendiente, En preparación, Listo para entrega, Entregado,
+Devolución y Cancelado. El vencimiento del enlace no cambia el estado del pedido.
 Configuración y edición de estado usan modales con confirmación de descarte.
-Confirmar un pedido no cobra ni reserva stock; la venta se registra en caja.
+Cambiar un estado no cobra ni reserva stock; la venta se registra en caja.
 Las futuras billeteras tendrán un estado de pago separado, sin botones de cobro
 ni proveedores ficticios en esta versión.
+
+La tienda prioriza productos con imagen antes de paginar. En teléfonos el buscador
+permanece visible, los controles tienen área táctil amplia y los modales se abren
+como panel inferior respetando el teclado y las áreas seguras. Las imágenes usan
+URLs públicas de la tienda sin requerir sesión ni credenciales de acceso.
