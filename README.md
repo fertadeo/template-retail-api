@@ -177,3 +177,39 @@ consultar vendedores; la API vuelve a validar ese rol en cada petición.
 Las pruebas de test:account cubren el bloqueo previo, persistencia del requisito,
 renovación, acceso posterior y vista administrativa independiente de credenciales.
 No se ejecutó MySQL. Desplegar la migración 021 junto con el frontend compatible.
+
+
+## Caja compartida por comercio (migración 022)
+
+GET /api/cash/current entrega la apertura y su resumen. POST /open registra el
+monto inicial y usuario de sesión; índice único open_comercio_id y bloqueo de
+comercio evitan aperturas paralelas. POST /:id/close requiere contado, versión y
+observación y solo admite al abridor o administrador. Bloquea la fila, comprueba
+que no entraron ventas nuevas y persiste el cierre y sus importes. GET /history
+pagina cierres; GET /daily-sales?from=YYYY-MM-DD&to=YYYY-MM-DD agrega ventas POS
+por día y moneda sin traer pedidos/líneas completos al cliente.
+
+El POS exige una apertura bloqueada FOR UPDATE en la transacción de la venta y
+asigna orders.cash_session_id. La versión avanza con cada venta, de modo que un
+cierre concurrente exige revisar el resumen. Se conserva el mecanismo existente
+de descuento de stock. No se permiten visitantes cobrando ni operadores elegidos
+por headers/body: el vendedor registrado es el usuario real autenticado. La caja
+es compartida y admite varios turnos por día. No hay movimientos de retiros o
+refuerzos; cualquier diferencia se registra al cierre con observación.
+
+Efectivo esperado = monto inicial + ventas POS en efectivo (incluido envío).
+Transferencias se totalizan por separado. Pedidos de catálogo, borradores y
+cancelaciones no se contabilizan como cobros. Históricos sin método de pago se
+muestran sin clasificar. Cada apertura guarda su moneda; el reporte no mezcla
+monedas al agrupar. Las aperturas anteriores no se inventan para ventas históricas.
+
+El día comercial usa RETAIL_UTC_OFFSET_MINUTES=-180 (Argentina) por defecto.
+Rangos usan límites UTC indexables y máximo 366 días; las nuevas órdenes usan
+UTC_TIMESTAMP. Se interpretan los timestamps históricos como UTC sin reescribirlos.
+Si una instalación anterior guardó horas locales, requiere normalizarlas antes
+para comparar su historia con las nuevas fechas comerciales.
+
+La migración 022 agrega tablas, asociación e índices sin borrar órdenes. No se
+ha ejecutado MySQL. npm run build && node --test tests/cash-register.test.cjs
+verifica importes, corte de día, caja cerrada y permisos/versión de cierre con
+persistencia simulada. Desplegar junto con frontend y las migraciones habituales.

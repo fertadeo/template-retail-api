@@ -1,3 +1,4 @@
+import { cashRouter } from "./cash.js";
 import { accountRouter } from "./account.js";
 import { publicCatalogRouter, privateCatalogRouter } from "./catalog.js";
 import { login, logout, requireSession, requireAccountManager } from "../lib/auth.js";
@@ -21,6 +22,7 @@ import { testConnection } from "../db/pool.js";
 export const apiRouter = Router();
 apiRouter.use("/catalog/public", publicCatalogRouter);
 apiRouter.use(requireSession);
+apiRouter.use("/cash", cashRouter);
 apiRouter.use("/auth", accountRouter);
 apiRouter.use("/users", requireAccountManager);
 apiRouter.use("/catalog", privateCatalogRouter);
@@ -399,9 +401,12 @@ apiRouter.post("/orders", async (req, res) => {
 
 apiRouter.post("/pos/checkout", async (req, res) => {
   try {
+    if (res.locals.user.role === "visitante") {
+      res.status(403).json({ error: "No tenés permiso para cobrar ventas." });
+      return;
+    }
     const comercioId = await comerciosSvc.resolveComercioId(readComercioId(req));
     const branchId = null;
-    const vendedorId = res.locals.user.id;
     const body = z
       .object({
         lines: z.array(lineSchema).min(1),
@@ -419,7 +424,7 @@ apiRouter.post("/pos/checkout", async (req, res) => {
         ...body,
         comercioId,
         branchId,
-        vendedorId,
+        vendedorId: res.locals.user.id,
       })
     );
   } catch (err) {
