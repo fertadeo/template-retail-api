@@ -213,3 +213,45 @@ La migración 022 agrega tablas, asociación e índices sin borrar órdenes. No 
 ha ejecutado MySQL. npm run build && node --test tests/cash-register.test.cjs
 verifica importes, corte de día, caja cerrada y permisos/versión de cierre con
 persistencia simulada. Desplegar junto con frontend y las migraciones habituales.
+
+## Colecciones editoriales del inicio (migración 020)
+
+`/api/catalog/collections` es privado y solo admite administradores/superadmins;
+hereda el bloqueo de escrituras de Ver como. GET lista metadatos sin blobs;
+GET /:id devuelve el borrador con IDs seleccionados; POST y PUT /:id guardan
+con baseRevision y action draft/publish. POST /:id/publish y /:id/pause requieren
+la revisión actual. Las lecturas y escrituras se acotan al comercio autenticado.
+El título, encuadre, posición, imagen y membresía publicados son una copia separada
+del borrador; se publican en una transacción y la edición posterior no los altera.
+Para activar se exige título, portada y al menos un producto públicamente disponible.
+
+GET /products dentro de ese prefijo pagina metadatos de 24 productos con búsqueda
+por nombre/SKU o hasta 24 IDs. GET /product-ids devuelve solo IDs (máximo 2000)
+para selección masiva sin cargar fichas o imágenes. Las selecciones se validan por
+comercio y se insertan por lotes de 200; máximo 50 colecciones por comercio.
+Los IDs seleccionados y sus posiciones se guardan en etapas draft/published.
+
+La información pública `/api/catalog/public` incluye solo colecciones activas con
+portada publicada y productos disponibles. `/api/catalog/public/products` acepta
+collection y sort=featured para el orden editorial; siempre aplica los filtros
+públicos de stock/precio/categoría y prioriza productos con foto. Ningún borrador
+se devuelve desde estas rutas. `/api/catalog/public/collections/:id/image` solo
+sirve la imagen publicada de una colección visible del comercio publicado;
+small=1 usa una variante WebP de hasta 640 px. La versión normal tiene hasta 1600 px.
+Las portadas privadas requieren sesión y los listados nunca incluyen datos binarios.
+
+La migración aditiva 020 crea tablas nuevas sin reclasificar productos ni tocar
+pedidos, precios o stock. Desplegar coordinadamente con el frontend y el mecanismo
+habitual de migraciones al arrancar. No se ejecutó MySQL en esta implementación.
+`npm run build && node --test tests/store-collections.test.cjs` verifica borradores,
+activación, rollback por publicación inválida, aislamiento por comercio y revisiones
+con persistencia simulada, sin conectarse a una base de datos.
+
+
+## Publicación de tienda y colecciones
+
+La API ofrece catálogo público paginado, búsqueda y filtros, fotos públicas solo de productos visibles, detalle/galería, revisión de carrito y checkout idempotente por clave. Cada pedido conserva precios y datos del comprador y aparece en la administración con los seis estados de preparación/entrega.
+
+Las colecciones tienen borrador y versión publicada independientes, portada procesada con Sharp, selección paginada de productos, orden, activación y pausa. Solo administradores y superadministradores pueden diseñar/publicar; el modo “Ver como” es de solo lectura.
+
+Aplicar las migraciones SQL antes de servir el frontend. `020_store_collections.sql` agrega colecciones sin publicar automáticamente ninguna. Se validaron compilación y pruebas aisladas de colecciones/autenticación; no se ejecutó MySQL ni se desplegó el servicio.

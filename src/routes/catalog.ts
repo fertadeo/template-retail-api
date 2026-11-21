@@ -1,3 +1,5 @@
+import { collectionRouter } from "./collections.js";
+import { collectionImage } from "../services/collections.js";
 import { Router } from "express";
 import { z } from "zod";
 import { sendError, HttpError } from "../lib/http.js";
@@ -74,6 +76,20 @@ publicCatalogRouter.get("/", async (_req, res) => {
     sendError(res, err);
   }
 });
+publicCatalogRouter.get("/collections/:id/image", async (req, res) => {
+  const cid = await catalog.publicMediaScope();
+  const image = await collectionImage(
+    cid,
+    req.params.id,
+    true,
+    typeof req.query.v === "string" ? req.query.v : undefined,
+    req.query.small === "1",
+  );
+  res.setHeader("Content-Type", "image/webp");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cache-Control", "public, max-age=60");
+  res.send(image);
+});
 publicCatalogRouter.get("/products", async (req, res) => {
   try {
     const options = z
@@ -82,8 +98,9 @@ publicCatalogRouter.get("/products", async (req, res) => {
         pageSize: z.coerce.number().int().min(1).max(48).default(24),
         q: z.string().trim().max(100).default(""),
         category: z.string().max(64).default(""),
+        collection: z.string().max(36).default(""),
         sort: z
-          .enum(["name", "price_asc", "price_desc", "recent"])
+          .enum(["name", "price_asc", "price_desc", "recent", "featured"])
           .default("name"),
       })
       .parse(req.query);
@@ -154,7 +171,8 @@ publicCatalogRouter.post("/orders", async (req, res) => {
 
 // Mounted after session middleware. Settings writes require an administrator.
 export const privateCatalogRouter = Router();
-privateCatalogRouter.get("/settings", async (_req, res) => {
+privateCatalogRouter.use("/collections", collectionRouter);
+privateCatalogRouter.get("/settings", async (req, res) => {
   try {
     res.json({
       settings: await catalog.getCatalogSettings(await getDefaultComercioId()),
