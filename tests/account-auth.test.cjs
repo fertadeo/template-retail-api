@@ -41,6 +41,7 @@ pool.execute = async (sql, params) => {
   if (!user?.activa || user.password_hash !== expected)
     return { affectedRows: 0 };
   user.password_hash = hash;
+  user.must_change_password = 0;
   return { affectedRows: 1 };
 };
 const auth = require("../dist/lib/auth.js");
@@ -291,5 +292,173 @@ test("account-management writes cannot escalate seller or administrator permissi
   assert.equal(
     (await guard("superadmin", "/seller", { role: "administrador" })).passed,
     true,
+  );
+});
+
+test("temporary credentials only allow password setup until the password is changed", async () => {
+  users.set("pending", {
+    id: "pending",
+    nombre: "Pending seller",
+    email: "pending@example.test",
+    role: "vendedor",
+    activa: 1,
+    must_change_password: 1,
+    password_hash: hashPassword("Temporary 123"),
+  });
+  const entered = await call(auth.login, {
+    path: "/auth/login",
+    method: "POST",
+    body: { email: "pending@example.test", password: "Temporary 123" },
+  });
+  assert.equal(entered.statusCode, 200);
+  assert.equal(entered.body.user.mustChangePassword, true);
+  for (const [path, method] of [
+    ["/products", "GET"],
+    ["/orders", "POST"],
+    ["/auth/profile", "GET"],
+    ["/auth/view-as", "POST"],
+  ]) {
+    const blocked = await call(
+      () => assert.fail("limited session accessed private data"),
+      { path, method, token: entered.token },
+    );
+    assert.equal(blocked.statusCode, 403);
+    assert.equal(blocked.body.code, "PASSWORD_CHANGE_REQUIRED");
+  }
+  const session = await call(inspect, {
+    path: "/auth/session",
+    token: entered.token,
+  });
+  assert.equal(session.body.user.mustChangePassword, true);
+  const wrong = await call(auth.changeOwnPassword, {
+    path: "/auth/password",
+    method: "PUT",
+    token: entered.token,
+    body: { currentPassword: "incorrect", newPassword: "Private password 123" },
+  });
+  assert.equal(wrong.statusCode, 400);
+  assert.equal(users.get("pending").must_change_password, 1);
+  const changed = await call(auth.changeOwnPassword, {
+    path: "/auth/password",
+    method: "PUT",
+    token: entered.token,
+    body: {
+      currentPassword: "Temporary 123",
+      newPassword: "Private password 123",
+    },
+  });
+  assert.equal(changed.statusCode, 200);
+  assert.equal(users.get("pending").must_change_password, 0);
+  assert.equal(
+    (await call(inspect, { path: "/products", token: changed.token }))
+      .statusCode,
+    200,
+  );
+  assert.equal(
+    (await call(inspect, { path: "/auth/session", token: entered.token }))
+      .statusCode,
+    401,
+  );
+  const nextLogin = await login("pending@example.test", "Private password 123");
+  assert.equal(
+    (await call(inspect, { path: "/auth/session", token: nextLogin })).body.user
+      .mustChangePassword,
+    false,
+  );
+});
+test("administrator can preview a pending seller without credentials but cannot preview privileged accounts", async () => {
+  users.set("manager", {
+    id: "manager",
+    nombre: "Manager",
+    email: "manager@example.test",
+    role: "administrador",
+    activa: 1,
+    must_change_password: 0,
+    password_hash: hashPassword("Manager 123"),
+  });
+  users.set("root", {
+    id: "root",
+    nombre: "Root",
+    email: "root@example.test",
+    role: "superadmin",
+    activa: 1,
+    must_change_password: 0,
+    password_hash: hashPassword("Root 123"),
+  });
+  users.get("pending").must_change_password = 1;
+  const manager = await login("manager@example.test", "Manager 123");
+  assert.equal(
+    (
+      await call(auth.startViewAs, {
+        path: "/auth/view-as",
+        method: "POST",
+        token: manager,
+        body: { userId: "root" },
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal(
+    (
+      await call(auth.startViewAs, {
+        path: "/auth/view-as",
+        method: "POST",
+        token: manager,
+        body: { userId: "pending" },
+      })
+    ).statusCode,
+    200,
+  );
+  let preview = await call(inspect, { path: "/products", token: manager });
+  assert.equal(preview.statusCode, 200);
+  assert.equal(preview.body.user.id, "pending");
+  assert.equal(preview.body.user.mustChangePassword, true);
+  assert.equal(preview.body.actor.id, "manager");
+  assert.equal(preview.body.actor.mustChangePassword, false);
+  assert.equal(
+    (
+      await call(auth.changeOwnPassword, {
+        path: "/auth/password",
+        method: "PUT",
+        token: manager,
+        body: {
+          currentPassword: "Manager 123",
+          newPassword: "A new password 456",
+        },
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal(users.get("pending").must_change_password, 1);
+  users.get("pending").password_hash = hashPassword("A seller reset 789");
+  preview = await call(inspect, { path: "/products", token: manager });
+  assert.equal(preview.statusCode, 200);
+  assert.equal(preview.body.user.id, "pending");
+  users.get("manager").must_change_password = 1;
+  assert.equal(
+    (await call(inspect, { path: "/products", token: manager })).body.code,
+    "PASSWORD_CHANGE_REQUIRED",
+    "actor requirement cannot be bypassed using another account",
+  );
+  await call(auth.stopViewAs, {
+    path: "/auth/view-as/stop",
+    method: "POST",
+    token: manager,
+  });
+  const root = await login("root@example.test", "Root 123");
+  assert.equal(
+    (
+      await call(auth.startViewAs, {
+        path: "/auth/view-as",
+        method: "POST",
+        token: root,
+        body: { userId: "manager" },
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal(
+    (await call(inspect, { path: "/products", token: root })).statusCode,
+    200,
   );
 });

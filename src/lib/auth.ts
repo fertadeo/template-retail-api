@@ -25,6 +25,7 @@ type AuthUser = RowDataPacket & {
   role: string;
   activa: number;
   password_hash: string;
+  must_change_password: number;
 };
 
 function sessionKey(req: Request) {
@@ -56,7 +57,7 @@ export async function sessionUser(req: Request) {
   const session = sessions.get(key);
   if (!session) return null;
   const rows = await query<AuthUser[]>(
-    "SELECT id, email, nombre, role, activa, password_hash FROM users WHERE id = ? LIMIT 1",
+    "SELECT id, email, nombre, role, activa, password_hash, must_change_password FROM users WHERE id = ? LIMIT 1",
     [session.userId],
   );
   const user = rows[0];
@@ -69,20 +70,27 @@ export async function sessionUser(req: Request) {
     email: user.email,
     nombre: user.nombre,
     role: user.role,
+    mustChangePassword: Boolean(user.must_change_password),
   };
   if (session.previewUserId) {
-    if (user.role !== "superadmin") return { ...actor, actor };
+    if (!["superadmin", "administrador"].includes(user.role))
+      return { ...actor, actor };
     const targets = await query<AuthUser[]>(
-      "SELECT id, email, nombre, role, activa FROM users WHERE id = ? LIMIT 1",
+      "SELECT id, email, nombre, role, activa, must_change_password FROM users WHERE id = ? LIMIT 1",
       [session.previewUserId],
     );
     const target = targets[0];
-    if (!target?.activa) return { ...actor, actor };
+    if (
+      !target?.activa ||
+      (user.role === "administrador" && target.role !== "vendedor")
+    )
+      return { ...actor, actor };
     return {
       id: target.id,
       email: target.email,
       nombre: target.nombre,
       role: target.role,
+      mustChangePassword: Boolean(target.must_change_password),
       actor,
     };
   }
@@ -115,7 +123,7 @@ export async function login(req: Request, res: Response) {
   attempt.count++;
   attempts.set(key, attempt);
   const rows = await query<AuthUser[]>(
-    "SELECT id, email, nombre, role, activa, password_hash FROM users WHERE email = ? LIMIT 1",
+    "SELECT id, email, nombre, role, activa, password_hash, must_change_password FROM users WHERE email = ? LIMIT 1",
     [email],
   );
   const user = rows[0];
@@ -144,6 +152,7 @@ export async function login(req: Request, res: Response) {
       email: user.email,
       nombre: user.nombre,
       role: user.role,
+      mustChangePassword: Boolean(user.must_change_password),
     },
   });
 }
@@ -176,6 +185,20 @@ export async function requireSession(
     const { actor, ...effectiveUser } = user;
     res.locals.user = effectiveUser;
     res.locals.actor = actor;
+    const owner = actor ?? effectiveUser;
+    const passwordControl =
+      (req.method === "GET" && req.path === "/auth/session") ||
+      (req.method === "PUT" && req.path === "/auth/password") ||
+      (req.method === "POST" && req.path === "/auth/view-as/stop");
+    if (owner.mustChangePassword && !passwordControl) {
+      res
+        .status(403)
+        .json({
+          code: "PASSWORD_CHANGE_REQUIRED",
+          error: "Para continuar, primero cambiá tu contraseña temporal.",
+        });
+      return;
+    }
     const previewControl =
       req.method === "POST" &&
       ["/auth/view-as", "/auth/view-as/stop", "/auth/logout"].includes(
@@ -201,8 +224,12 @@ export async function requireSession(
 /** The original superadmin session remains the authority; target passwords are never used. */
 export async function startViewAs(req: Request, res: Response) {
   const actor = res.locals.actor ?? res.locals.user;
-  if (actor?.role !== "superadmin") {
-    res.status(403).json({ error: "Solo el superadmin puede usar Ver como." });
+  if (!["superadmin", "administrador"].includes(actor?.role)) {
+    res
+      .status(403)
+      .json({
+        error: "Solo un administrador o superadmin puede usar Ver como.",
+      });
     return;
   }
   const id = typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
@@ -211,11 +238,20 @@ export async function startViewAs(req: Request, res: Response) {
     return;
   }
   const users = await query<AuthUser[]>(
-    "SELECT id, activa FROM users WHERE id = ? LIMIT 1",
+    "SELECT id, role, activa FROM users WHERE id = ? LIMIT 1",
     [id],
   );
   if (!users[0]?.activa) {
     res.status(404).json({ error: "La cuenta no está disponible." });
+    return;
+  }
+  if (actor.role === "administrador" && users[0].role !== "vendedor") {
+    res
+      .status(403)
+      .json({
+        error:
+          "Los administradores solo pueden consultar cuentas de vendedores.",
+      });
     return;
   }
   const session = sessions.get(sessionKey(req));
@@ -290,7 +326,7 @@ export async function changeOwnPassword(req: Request, res: Response) {
   }
   const passwordHash = hashPassword(newPassword);
   const result = await execute(
-    "UPDATE users SET password_hash = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND password_hash = ? AND activa = 1",
+    "UPDATE users SET password_hash = ?, must_change_password = 0, updated_at = UTC_TIMESTAMP() WHERE id = ? AND password_hash = ? AND activa = 1",
     [passwordHash, id, user.password_hash],
   );
   if (result.affectedRows !== 1) {
