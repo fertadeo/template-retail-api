@@ -228,7 +228,7 @@ test("own password changes rotate sessions; superadmin preview remains independe
 });
 
 test("account-management writes cannot escalate seller or administrator permissions", async () => {
-  async function guard(role, path, body = {}) {
+  async function guard(role, path, body = {}, method = "PATCH") {
     const res = {
       locals: { user: { role } },
       statusCode: 200,
@@ -242,13 +242,9 @@ test("account-management writes cannot escalate seller or administrator permissi
       },
     };
     let passed = false;
-    await auth.requireAccountManager(
-      { method: "PATCH", path, body },
-      res,
-      () => {
-        passed = true;
-      },
-    );
+    await auth.requireAccountManager({ method, path, body }, res, () => {
+      passed = true;
+    });
     return { ...res, passed };
   }
   assert.equal(
@@ -270,6 +266,27 @@ test("account-management writes cannot escalate seller or administrator permissi
   assert.equal(
     (await guard("administrador", "/seller", { role: "vendedor" })).passed,
     true,
+  );
+  for (const role of ["vendedor", "visitante", "administrador"]) {
+    assert.equal(
+      (await guard("administrador", "/", { role }, "POST")).passed,
+      true,
+      `administrador can create ${role}`,
+    );
+  }
+  assert.equal(
+    (await guard("administrador", "/", { role: "superadmin" }, "POST"))
+      .statusCode,
+    403,
+  );
+  assert.equal(
+    (await guard("administrador", "/seller", { role: "administrador" }))
+      .statusCode,
+    403,
+  );
+  assert.equal(
+    (await guard("vendedor", "/", { role: "vendedor" }, "POST")).statusCode,
+    403,
   );
   assert.equal(
     (await guard("superadmin", "/seller", { role: "administrador" })).passed,

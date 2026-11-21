@@ -186,12 +186,10 @@ export async function requireSession(
       !["GET", "HEAD", "OPTIONS"].includes(req.method) &&
       !previewControl
     ) {
-      res
-        .status(403)
-        .json({
-          error:
-            "Estás viendo otra cuenta en modo solo lectura. Volvé a tu cuenta para realizar cambios.",
-        });
+      res.status(403).json({
+        error:
+          "Estás viendo otra cuenta en modo solo lectura. Volvé a tu cuenta para realizar cambios.",
+      });
       return;
     }
     next();
@@ -250,12 +248,10 @@ export async function changeOwnPassword(req: Request, res: Response) {
     newPassword.trim().length < 8 ||
     newPassword.length > 128
   ) {
-    res
-      .status(400)
-      .json({
-        error:
-          "Ingresá tu contraseña actual y una nueva de entre 8 y 128 caracteres.",
-      });
+    res.status(400).json({
+      error:
+        "Ingresá tu contraseña actual y una nueva de entre 8 y 128 caracteres.",
+    });
     return;
   }
   if (currentPassword === newPassword) {
@@ -334,13 +330,16 @@ export async function requireAccountManager(
     return;
   }
   if (role === "administrador") {
-    if (req.body?.role && !["vendedor", "visitante"].includes(req.body.role)) {
-      res
-        .status(403)
-        .json({
-          error:
-            "Solo el superadmin puede administrar cuentas de administradores.",
-        });
+    const isCreate =
+      req.method === "POST" && req.path.replace(/\/+$/, "") === "";
+    const allowedRoles = isCreate
+      ? ["vendedor", "visitante", "administrador"]
+      : ["vendedor", "visitante"];
+    if (req.body?.role && !allowedRoles.includes(req.body.role)) {
+      res.status(403).json({
+        error:
+          "No tenés permiso para asignar ese rol. La creación de superadmins está reservada al superadmin.",
+      });
       return;
     }
     const id = req.path.split("/").filter(Boolean)[0];

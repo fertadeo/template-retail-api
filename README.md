@@ -146,10 +146,15 @@ la consulta; revocar las credenciales del superadmin sí revoca su sesión de vi
 Si el destino se desactiva, la vista permanece bloqueada hasta salir.
 
 Las escrituras de /users requieren administrador o superadmin; un administrador
-solo puede gestionar vendedores/visitantes. Un vendedor no puede elevar su rol
+puede crear vendedores, visitantes y administradores; solo puede editar/desactivar
+cuentas existentes de vendedores/visitantes. Un vendedor no puede elevar su rol
 ni modificar cuentas ajenas desde la API; su perfil se edita por /auth/profile.
 
 Desplegar con la migración aditiva `019_user_profiles.sql` y el frontend compatible.
 No se ejecuta MySQL durante la validación: `npm run test:account` compila y ejecuta
 pruebas aisladas con persistencia simulada para cambios de contraseña, revocación,
 separación de identidades y modo de consulta sin escrituras.
+
+Los administradores pueden crear usuarios con roles vendedor, visitante y administrador
+mediante POST /api/users. Crear superadmins y modificar cuentas de administración
+existentes sigue reservado al superadmin. No requiere migraciones.
