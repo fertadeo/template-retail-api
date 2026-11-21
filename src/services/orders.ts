@@ -1,3 +1,4 @@
+import { requireOpenCash } from "./cash.js";
 import type {
   PoolConnection,
   ResultSetHeader,
@@ -151,12 +152,15 @@ async function insertOrder(
   order: Omit<Order, "createdAt"> & { createdAt?: string },
   deductStock: boolean
 ): Promise<PendingDeduction[]> {
+  const cashSessionId = order.canal === "pos"
+    ? await requireOpenCash(conn, order.comercioId!)
+    : null;
   const pending: PendingDeduction[] = [];
   await conn.execute(
     `INSERT INTO orders
      (id, comercio_id, branch_id, vendedor_id, folio, client_id, cliente_nombre, status, canal, price_list_id,
-      con_envio, envio_costo, direccion_envio, telefono_contacto, metodo_pago)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      con_envio, envio_costo, direccion_envio, telefono_contacto, metodo_pago, cash_session_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))`,
     [
       order.id,
       order.comercioId ?? null,
@@ -173,6 +177,7 @@ async function insertOrder(
       order.direccionEnvio,
       order.telefonoContacto,
       order.metodoPago,
+      cashSessionId,
     ]
   );
   for (const line of order.lines) {
@@ -447,6 +452,9 @@ export async function createPosSale(input: {
   for (let i = 0; i < lines.length; i++) {
     if (!products[i]) {
       throw new HttpError(400, `Producto ${lines[i].productId} no encontrado.`);
+    }
+    if (products[i]!.comercioId !== comercioId) {
+      throw new HttpError(400, "La venta incluye un producto de otro comercio.");
     }
     lines[i].nombre = products[i]!.nombre;
   }
