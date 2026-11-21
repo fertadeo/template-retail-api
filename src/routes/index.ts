@@ -1,5 +1,6 @@
+import { accountRouter } from "./account.js";
 import { publicCatalogRouter, privateCatalogRouter } from "./catalog.js";
-import { login, logout, requireSession } from "../lib/auth.js";
+import { login, logout, requireSession, requireAccountManager } from "../lib/auth.js";
 import { Router } from "express";
 import { z } from "zod";
 import { readComercioId } from "../lib/comercio-req.js";
@@ -20,11 +21,13 @@ import { testConnection } from "../db/pool.js";
 export const apiRouter = Router();
 apiRouter.use("/catalog/public", publicCatalogRouter);
 apiRouter.use(requireSession);
+apiRouter.use("/auth", accountRouter);
+apiRouter.use("/users", requireAccountManager);
 apiRouter.use("/catalog", privateCatalogRouter);
 apiRouter.post("/auth/login", login);
 apiRouter.post("/auth/logout", logout);
 apiRouter.get("/auth/session", (_req, res) => {
-  res.json({ user: res.locals.user });
+  res.json({ user: res.locals.user, actor: res.locals.actor ?? null });
 });
 
 // The installation has one local business profile, not a selectable store list.

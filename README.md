@@ -118,3 +118,38 @@ Listo para entrega también puede volver a preparación. El vencimiento del enla
 de WhatsApp no cancela ni oculta solicitudes pendientes. Estados históricos
 confirmado/vencido se leen como en_preparacion/pendiente sin reescribir filas.
 No se requiere una nueva migración para estos estados (columna VARCHAR existente).
+
+
+## Mi cuenta y Ver como
+
+`GET /api/auth/profile` devuelve solo el perfil de la sesión efectiva. `PATCH`
+en la misma URL permite editar nombre, teléfono y email de contacto (no cambia
+el email de login). Un `avatarDataUrl` JPG/PNG/WebP opcional se valida y convierte
+a WebP de hasta 512 px; `null` lo elimina. El guardado de datos y foto es atómico.
+`GET /api/auth/profile/avatar` entrega la foto de la sesión autenticada con caché
+privada deshabilitada. No acepta un usuario destino ni expone fotos públicamente.
+Los blobs viven en user_profiles, separados de los listados de usuarios.
+
+`PUT /api/auth/password` requiere currentPassword y newPassword (8–128 caracteres).
+Siempre modifica la cuenta autenticada: ignora cualquier id externo. Verifica la
+contraseña actual, limita intentos y compara el hash anterior al actualizar para
+no pisar un cambio concurrente. Cierra todas las sesiones previas de esa cuenta
+y renueva el token del navegador que realizó el cambio.
+
+`POST /api/auth/view-as` acepta userId únicamente desde una sesión superadmin.
+Conserva la identidad y el hash del superadmin; no usa ni verifica la contraseña
+del usuario consultado. `/api/auth/session` devuelve el usuario efectivo y actor
+cuando hay una vista activa. El middleware bloquea todas las escrituras privadas
+durante esa vista, salvo los controles de vista y logout. `POST /api/auth/view-as/stop`
+restaura la identidad original. Cambiar la contraseña del vendedor no interrumpe
+la consulta; revocar las credenciales del superadmin sí revoca su sesión de vista.
+Si el destino se desactiva, la vista permanece bloqueada hasta salir.
+
+Las escrituras de /users requieren administrador o superadmin; un administrador
+solo puede gestionar vendedores/visitantes. Un vendedor no puede elevar su rol
+ni modificar cuentas ajenas desde la API; su perfil se edita por /auth/profile.
+
+Desplegar con la migración aditiva `019_user_profiles.sql` y el frontend compatible.
+No se ejecuta MySQL durante la validación: `npm run test:account` compila y ejecuta
+pruebas aisladas con persistencia simulada para cambios de contraseña, revocación,
+separación de identidades y modo de consulta sin escrituras.
