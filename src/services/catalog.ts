@@ -1,3 +1,4 @@
+import { publicCollections } from "./collections.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { query, withTransaction } from "../db/pool.js";
@@ -266,20 +267,41 @@ export async function publicCatalogInfo() {
     orderTtlHours: settings.orderTtlHours,
     categories: rows.map((row) => ({ ...row, count: Number(row.count) })),
     total: rows.reduce((sum, row) => sum + Number(row.count), 0),
+    collections: await publicCollections(cid, listId),
     checkout: { channel: "whatsapp" as const, onlinePayments: false },
   };
 }
-export async function publicProducts(options: {
-  page: number;
-  pageSize: number;
-  q: string;
-  category: string;
-  sort: "name" | "price_asc" | "price_desc" | "recent";
-}) {
+export async function publicProducts(
+  options: {
+    page: number;
+    pageSize: number;
+    q: string;
+    category: string;
+    collection?: string;
+    sort: "name" | "price_asc" | "price_desc" | "recent" | "featured";
+  },
+) {
   const { cid, settings } = await publicContext();
   const listId = await getDefaultPriceListId(cid);
   const where = [VISIBLE];
   const params: (string | number)[] = [listId, cid];
+  let collection: { id: string; title: string } | null = null;
+  if (options.collection) {
+    const rows = await query<(RowDataPacket & { id: string; title: string })[]>(
+      "SELECT id, published_title AS title FROM catalog_collections WHERE id = ? AND comercio_id = ? AND active = 1 AND published_image IS NOT NULL LIMIT 1",
+      [options.collection, cid],
+    );
+    if (!rows[0])
+      throw new HttpError(
+        404,
+        "Esta colección ya no está disponible. Podés seguir mirando todos los productos.",
+      );
+    collection = { id: rows[0].id, title: rows[0].title };
+    where.push(
+      "EXISTS (SELECT 1 FROM catalog_collection_items selected WHERE selected.collection_id = ? AND selected.stage = 'published' AND selected.product_id = p.id)",
+    );
+    params.push(options.collection);
+  }
   if (options.category) {
     where.push("p.categoria = ?");
     params.push(options.category);
@@ -290,11 +312,16 @@ export async function publicProducts(options: {
     params.push(term, term);
   }
   const order = {
+    featured: options.collection
+      ? "(SELECT ordered.position FROM catalog_collection_items ordered WHERE ordered.collection_id = ? AND ordered.stage = 'published' AND ordered.product_id = p.id LIMIT 1) ASC"
+      : "p.nombre ASC",
     name: "p.nombre ASC",
     price_asc: "price ASC",
     price_desc: "price DESC",
     recent: "p.created_at DESC",
   }[options.sort];
+  if (options.sort === "featured" && options.collection)
+    params.push(options.collection);
   // Descriptions and binary files are not needed for browsing.
   const rows = await query<ProductRow[]>(
     `SELECT p.id, p.nombre, p.sku, p.categoria,
@@ -312,6 +339,7 @@ export async function publicProducts(options: {
     ),
     page: options.page,
     pageSize: options.pageSize,
+    collection,
     hasMore: rows.length > options.pageSize,
   };
 }
