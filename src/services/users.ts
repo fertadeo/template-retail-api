@@ -181,7 +181,7 @@ export async function upsertUser(input: {
         input.activa === false ? 0 : 1,
       ];
       if (input.password?.trim()) {
-        sets.push("password_hash = ?");
+        sets.push("password_hash = ?", "must_change_password = 1");
         params.push(hashPassword(input.password.trim()));
       }
       params.push(id);
@@ -194,8 +194,8 @@ export async function upsertUser(input: {
       }
     } else {
       await conn.execute(
-        `INSERT INTO users (id, email, nombre, password_hash, role, activa)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO users (id, email, nombre, password_hash, role, activa, must_change_password)
+         VALUES (?, ?, ?, ?, ?, ?, 1)`,
         [
           id,
           email,
@@ -269,8 +269,8 @@ export async function ensureSeedUsers(): Promise<void> {
 
     const id = "usr_superadmin";
     await execute(
-      `INSERT INTO users (id, email, nombre, password_hash, role, activa)
-       VALUES (?, ?, ?, ?, 'superadmin', 1)`,
+      `INSERT INTO users (id, email, nombre, password_hash, role, activa, must_change_password)
+       VALUES (?, ?, ?, ?, 'superadmin', 1, 1)`,
       [
         id,
         "superadmin@aurixerp.com",

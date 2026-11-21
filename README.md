@@ -136,7 +136,7 @@ contraseña actual, limita intentos y compara el hash anterior al actualizar par
 no pisar un cambio concurrente. Cierra todas las sesiones previas de esa cuenta
 y renueva el token del navegador que realizó el cambio.
 
-`POST /api/auth/view-as` acepta userId únicamente desde una sesión superadmin.
+`POST /api/auth/view-as` acepta userId desde superadmin o administrador; el administrador solo puede consultar vendedores.
 Conserva la identidad y el hash del superadmin; no usa ni verifica la contraseña
 del usuario consultado. `/api/auth/session` devuelve el usuario efectivo y actor
 cuando hay una vista activa. El middleware bloquea todas las escrituras privadas
@@ -158,3 +158,22 @@ separación de identidades y modo de consulta sin escrituras.
 Los administradores pueden crear usuarios con roles vendedor, visitante y administrador
 mediante POST /api/users. Crear superadmins y modificar cuentas de administración
 existentes sigue reservado al superadmin. No requiere migraciones.
+
+
+### Primer acceso (migración 021)
+
+users.must_change_password indica que la contraseña es temporal. Las nuevas altas,
+el usuario inicial de instalaciones nuevas y los restablecimientos administrativos
+la dejan en 1. changeOwnPassword verifica la contraseña temporal, renueva la sesión
+y la pone en 0 de forma atómica junto con el hash. La migración agrega la bandera
+sin imponer cambios a cuentas existentes y establece el default de futuras altas.
+
+Una sesión con cambio pendiente solo puede consultar /auth/session, cambiar su
+contraseña, cerrar sesión o salir de una vista. Las demás rutas privadas devuelven
+403 con code=PASSWORD_CHANGE_REQUIRED, incluidas lecturas. En Ver como la obligación
+se evalúa sobre el actor real; el vendedor puede tener un cambio pendiente sin
+bloquear la consulta de superadmin/administrador. El administrador solo puede
+consultar vendedores; la API vuelve a validar ese rol en cada petición.
+Las pruebas de test:account cubren el bloqueo previo, persistencia del requisito,
+renovación, acceso posterior y vista administrativa independiente de credenciales.
+No se ejecutó MySQL. Desplegar la migración 021 junto con el frontend compatible.
